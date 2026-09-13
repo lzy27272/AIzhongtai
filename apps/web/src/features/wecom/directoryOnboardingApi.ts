@@ -111,6 +111,7 @@ export function loadDirectoryOnboardingContext(sessionToken: string) {
 export function submitDirectoryOnboarding(
   sessionToken: string,
   displayName: string,
+  mobile: string,
   loginName: string,
   password: string,
   passwordConfirmation: string,
@@ -119,7 +120,7 @@ export function submitDirectoryOnboarding(
   expectedVersion: number,
 ) {
   return publicPost<DirectoryOnboardingSubmitResponse>('/integrations/wecom/directory-onboarding/submit', {
-    sessionToken, displayName, loginName, password, passwordConfirmation,
+    sessionToken, displayName, mobile, loginName, password, passwordConfirmation,
     orgUnitId, positionId, expectedVersion,
   })
 }

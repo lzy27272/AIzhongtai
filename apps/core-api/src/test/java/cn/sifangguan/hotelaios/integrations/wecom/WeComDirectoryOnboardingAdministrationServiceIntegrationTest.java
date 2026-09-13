@@ -190,6 +190,70 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
     }
 
     @Test
+    void reviewedRegistrationCopiesMobileToTheApprovedAccountAndEmployee() {
+        OpenInvitationResponse invitation = inTransaction(service::createOpenInvitation);
+        WeComDirectoryOnboardingService lifecycle = lifecycleService();
+        inTransaction(() -> lifecycle.completeOAuth(
+                invitation.candidateId(), "mobile-registration-" + UUID.randomUUID()));
+        String session = "mobile-session-" + UUID.randomUUID();
+        jdbc.update("""
+                update wecom_person_onboarding
+                set session_token_hash = ?, session_expires_at = now() + interval '10 minutes'
+                where id = ?
+                """, WeComDirectorySecretCodec.sha256(session), invitation.candidateId());
+        long version = jdbc.queryForObject(
+                "select row_version from wecom_person_onboarding where id = ?",
+                Long.class, invitation.candidateId());
+
+        SubmitResponse submitted = inTransaction(() -> lifecycle.submit(new SubmitRequest(
+                session, "Mobile employee", "13900004501",
+                "mobile.employee." + invitation.candidateId(),
+                "Directory-Test-Password-2026", "Directory-Test-Password-2026",
+                FRONT_DEPARTMENT, FRONT_POSITION, version)));
+        assertThat(jdbc.queryForObject("""
+                select requested_mobile from wecom_person_onboarding where id = ?
+                """, String.class, invitation.candidateId())).isEqualTo("13900004501");
+
+        ApprovalResponse approved = inTransaction(() -> service.approve(
+                invitation.candidateId(), new DecisionRequest(
+                        submitted.rowVersion(), "mobile reviewed", false)));
+
+        assertThat(jdbc.queryForObject(
+                "select mobile from user_account where id = ?", String.class,
+                approved.accountId())).isEqualTo("13900004501");
+        assertThat(jdbc.queryForObject(
+                "select mobile from employee where account_id = ?", String.class,
+                approved.accountId())).isEqualTo("13900004501");
+    }
+
+    @Test
+    void registrationRejectsAMobileThatAlreadyBelongsToAPlatformAccount() {
+        OpenInvitationResponse invitation = inTransaction(service::createOpenInvitation);
+        WeComDirectoryOnboardingService lifecycle = lifecycleService();
+        inTransaction(() -> lifecycle.completeOAuth(
+                invitation.candidateId(), "duplicate-mobile-" + UUID.randomUUID()));
+        String session = "duplicate-mobile-session-" + UUID.randomUUID();
+        jdbc.update("""
+                update wecom_person_onboarding
+                set session_token_hash = ?, session_expires_at = now() + interval '10 minutes'
+                where id = ?
+                """, WeComDirectorySecretCodec.sha256(session), invitation.candidateId());
+        long version = jdbc.queryForObject(
+                "select row_version from wecom_person_onboarding where id = ?",
+                Long.class, invitation.candidateId());
+        String registeredMobile = jdbc.queryForObject(
+                "select mobile from user_account where id = ?", String.class, FRONT_ACCOUNT);
+
+        assertThatThrownBy(() -> inTransaction(() -> lifecycle.submit(new SubmitRequest(
+                session, "Duplicate mobile", registeredMobile,
+                "duplicate.mobile." + invitation.candidateId(),
+                "Directory-Test-Password-2026", "Directory-Test-Password-2026",
+                FRONT_DEPARTMENT, FRONT_POSITION, version))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("手机号已注册");
+    }
+
+    @Test
     void concurrentConfirmedTransferCreatesOneIdentityChainAndReturnsTheSameAccount() throws Exception {
         String userId = "concurrent-transfer-" + UUID.randomUUID();
         UUID bindingId = UUID.randomUUID();
@@ -1328,7 +1392,7 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
                 "select row_version from wecom_person_onboarding where id = ?", Long.class, candidateId);
 
         SubmitResponse submitted = inTransaction(() -> lifecycle.submit(new SubmitRequest(
-                session, "New employee", "new.employee." + candidateId,
+                session, "New employee", "13900004502", "new.employee." + candidateId,
                 "Directory-Test-Password-2026", "Directory-Test-Password-2026",
                 FRONT_DEPARTMENT, FRONT_POSITION, version)));
 

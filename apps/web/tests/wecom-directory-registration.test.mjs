@@ -8,9 +8,11 @@ const bindingAdministration = readFileSync(new URL('../src/features/wecom/WecomU
 const migration = readFileSync(new URL('../../../database/migrations/V41__wecom_directory_account_registration.sql', import.meta.url), 'utf8')
 const manualInvitationMigration = readFileSync(new URL('../../../database/migrations/V42__manual_wecom_onboarding_invitation.sql', import.meta.url), 'utf8')
 const onboardingDefaultsMigration = readFileSync(new URL('../../../database/migrations/V44__enable_reviewed_wecom_onboarding_positions.sql', import.meta.url), 'utf8')
+const mobileRegistrationMigration = readFileSync(new URL('../../../database/migrations/V45__wecom_onboarding_mobile_registration.sql', import.meta.url), 'utf8')
 
 test('verified new members register their account before choosing assignment', () => {
   assert.match(entry, /个人姓名/)
+  assert.match(entry, /手机号/)
   assert.match(entry, /登录账号/)
   assert.match(entry, /登录密码/)
   assert.match(entry, /确认密码/)
@@ -20,7 +22,7 @@ test('verified new members register their account before choosing assignment', (
 
 test('registration submits confirmation but never persists secrets in browser storage', () => {
   assert.match(api, /passwordConfirmation/)
-  assert.match(api, /sessionToken, displayName, loginName, password, passwordConfirmation/)
+  assert.match(api, /sessionToken, displayName, mobile, loginName, password, passwordConfirmation/)
   assert.doesNotMatch(entry, /localStorage|sessionStorage/)
   assert.doesNotMatch(api, /localStorage|sessionStorage/)
 })
@@ -32,21 +34,21 @@ test('migration reserves open logins and grants both HR reviewer roles', () => {
   assert.match(migration, /'wecom-onboarding\.review'/)
 })
 
-test('employees without a platform account use reviewed self-registration', () => {
+test('a single invitation entry performs reviewed mobile registration', () => {
   assert.match(bindingAdministration, /createDirectoryOnboardingInvitation/)
-  assert.match(bindingAdministration, /无中台账号注册邀请/)
-  assert.match(bindingAdministration, /自行填写姓名、账号、密码、门店和岗位/)
+  assert.match(bindingAdministration, /一键邀请/)
+  assert.match(bindingAdministration, /填写手机号、姓名、账号、密码、门店和岗位/)
+  assert.doesNotMatch(bindingAdministration, /已有中台账号绑定|无中台账号注册/)
   assert.doesNotMatch(bindingAdministration, /createEmployeeInvitation|employeeInviteForm/)
   assert.match(api, /directory-onboarding\/invitations/)
   assert.match(entry, /context\.invitationSource === 'MANUAL_LINK'/)
 })
 
-test('existing employees receive an account-specific binding invitation without registering again', () => {
-  assert.match(bindingAdministration, /已有中台账号绑定/)
-  assert.match(bindingAdministration, /选择在职员工/)
-  assert.match(bindingAdministration, /bindablePeople/)
-  assert.match(bindingAdministration, /inviteBinding\(identity, person\.accountId, assignment\.id\)/)
-  assert.match(bindingAdministration, /不会被要求重新注册账号/)
+test('mobile registration is validated and protected by database uniqueness', () => {
+  assert.match(entry, /\^1\[3-9\]\\d\{9\}\$/)
+  assert.match(mobileRegistrationMigration, /requested_mobile/)
+  assert.match(mobileRegistrationMigration, /ux_user_account_tenant_mobile/)
+  assert.match(mobileRegistrationMigration, /ux_wecom_onboarding_open_mobile/)
 })
 
 test('manual invitations store no employee profile before verified registration', () => {

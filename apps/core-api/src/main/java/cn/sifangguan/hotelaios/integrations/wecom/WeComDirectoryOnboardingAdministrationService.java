@@ -6,6 +6,7 @@ import cn.sifangguan.hotelaios.shared.db.TenantDatabaseContext;
 import cn.sifangguan.hotelaios.shared.security.AccessPolicy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -335,7 +336,8 @@ public class WeComDirectoryOnboardingAdministrationService {
                     exchange_expires_at = null, session_token_hash = null,
                     session_expires_at = null, requested_org_unit_id = null,
                     requested_position_id = null, profile_submitted_at = null,
-                    requested_display_name = null, requested_login_name = null,
+                    requested_display_name = null, requested_mobile = null,
+                    requested_login_name = null,
                     requested_password_hash = null, registration_completed_at = null,
                     conflicting_account_id = null, failure_code = null,
                     decision_reason = null, row_version = row_version + 1
@@ -459,6 +461,10 @@ public class WeComDirectoryOnboardingAdministrationService {
         String passwordHash = sourceIdentity == null
                 ? required(candidate.requestedPasswordHash(), "员工尚未完成登录密码注册")
                 : null;
+        String mobile = sourceIdentity == null ? candidate.requestedMobile() : null;
+        if (mobile != null && mobileExists(principal, mobile)) {
+            throw new IllegalArgumentException("手机号已注册");
+        }
         if (sourceIdentity == null && loginExists(principal, loginName)) {
             throw new IllegalArgumentException("登录账号已被使用，请拒绝或让员工更换账号后重新提交");
         }
@@ -469,6 +475,7 @@ public class WeComDirectoryOnboardingAdministrationService {
                 .addValue("roleAssignmentId", roleAssignmentId)
                 .addValue("bindingId", bindingId)
                 .addValue("displayName", displayName)
+                .addValue("mobile", mobile)
                 .addValue("loginName", loginName)
                 .addValue("passwordHash", passwordHash)
                 .addValue("employeeNo", "WECOM-" + compactEmployeeId)
@@ -486,20 +493,27 @@ public class WeComDirectoryOnboardingAdministrationService {
                 .addValue("expectedVersion", candidate.rowVersion());
 
         if (sourceIdentity == null) {
-            jdbc.update("""
-                    insert into user_account
-                        (id, tenant_id, login_name, display_name, status,
-                         password_hash, password_changed_at)
-                    values (:accountId, :tenantId, :loginName, :displayName, 'ACTIVE',
-                            :passwordHash, now())
-                    """, identity);
-            jdbc.update("""
-                    insert into employee
-                        (id, tenant_id, account_id, employee_no, name,
-                         employment_status, hired_on)
-                    values (:employeeId, :tenantId, :accountId, :employeeNo, :displayName,
-                            'ACTIVE', current_date)
-                    """, identity);
+            try {
+                jdbc.update("""
+                        insert into user_account
+                            (id, tenant_id, login_name, display_name, mobile, status,
+                             password_hash, password_changed_at)
+                        values (:accountId, :tenantId, :loginName, :displayName, :mobile, 'ACTIVE',
+                                :passwordHash, now())
+                        """, identity);
+                jdbc.update("""
+                        insert into employee
+                            (id, tenant_id, account_id, employee_no, name, mobile,
+                             employment_status, hired_on)
+                        values (:employeeId, :tenantId, :accountId, :employeeNo, :displayName, :mobile,
+                                'ACTIVE', current_date)
+                        """, identity);
+            } catch (DuplicateKeyException exception) {
+                if (isMobileConflict(exception)) {
+                    throw new IllegalArgumentException("手机号已注册");
+                }
+                throw exception;
+            }
         } else {
             retireSourceAssignmentAndRole(principal, sourceIdentity);
         }
@@ -830,7 +844,8 @@ public class WeComDirectoryOnboardingAdministrationService {
                     exchange_expires_at = null, session_token_hash = null,
                     session_expires_at = null, requested_org_unit_id = null,
                     requested_position_id = null, profile_submitted_at = null,
-                    requested_display_name = null, requested_login_name = null,
+                    requested_display_name = null, requested_mobile = null,
+                    requested_login_name = null,
                     requested_password_hash = null, registration_completed_at = null,
                     conflicting_account_id = null,
                     failure_code = 'SUPERSEDED_BY_DIRECTORY_EVENT',
@@ -857,7 +872,7 @@ public class WeComDirectoryOnboardingAdministrationService {
     private Candidate lockCandidate(TenantPrincipal principal, UUID candidateId) {
         List<Candidate> rows = jdbc.query("""
                 select id, status, display_name, requested_display_name,
-                       requested_login_name, requested_password_hash,
+                       requested_mobile, requested_login_name, requested_password_hash,
                        user_id_fingerprint, user_id_ciphertext,
                        onboarding_kind, invitation_source, source_binding_id, source_account_id,
                        directory_status, failure_code, invitation_expires_at,
@@ -870,7 +885,8 @@ public class WeComDirectoryOnboardingAdministrationService {
                 """, base(principal).addValue("candidateId", candidateId), (rs, rowNum) -> new Candidate(
                 rs.getObject("id", UUID.class), rs.getString("status"),
                 rs.getString("display_name"), rs.getString("requested_display_name"),
-                rs.getString("requested_login_name"), rs.getString("requested_password_hash"),
+                rs.getString("requested_mobile"), rs.getString("requested_login_name"),
+                rs.getString("requested_password_hash"),
                 rs.getString("user_id_fingerprint"),
                 rs.getString("user_id_ciphertext"),
                 rs.getString("onboarding_kind"),
@@ -1289,6 +1305,21 @@ public class WeComDirectoryOnboardingAdministrationService {
         return count != null && count > 0;
     }
 
+    private boolean mobileExists(TenantPrincipal principal, String mobile) {
+        Integer count = jdbc.queryForObject("""
+                select count(*) from user_account
+                where tenant_id = :tenantId
+                  and regexp_replace(mobile, '[^0-9]', '', 'g')
+                      in (:mobile, '86' || :mobile, '0086' || :mobile)
+                """, base(principal).addValue("mobile", mobile), Integer.class);
+        return count != null && count > 0;
+    }
+
+    private static boolean isMobileConflict(DuplicateKeyException exception) {
+        String message = exception.getMostSpecificCause().getMessage();
+        return message != null && message.contains("ux_user_account_tenant_mobile");
+    }
+
     private static IllegalArgumentException stale() {
         return new IllegalArgumentException("申请已变化，请刷新后重试");
     }
@@ -1301,7 +1332,8 @@ public class WeComDirectoryOnboardingAdministrationService {
 
     private record Candidate(
             UUID id, String status, String displayName,
-            String requestedDisplayName, String requestedLoginName, String requestedPasswordHash,
+            String requestedDisplayName, String requestedMobile,
+            String requestedLoginName, String requestedPasswordHash,
             String fingerprint,
             String userIdCiphertext, String onboardingKind,
             String invitationSource,

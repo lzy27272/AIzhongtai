@@ -11,6 +11,13 @@ import {
 
 type Selection = { orgUnitId: string; positionId: string }
 
+function normalizeMainlandMobile(value: string) {
+  const digits = value.replace(/\D/g, '')
+  if (digits.length === 13 && digits.startsWith('86')) return digits.slice(2)
+  if (digits.length === 15 && digits.startsWith('0086')) return digits.slice(4)
+  return digits
+}
+
 const oauthErrors = {
   OAUTH_SESSION_INVALID: {
     title: '验证会话已失效',
@@ -36,6 +43,7 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
   const [hotelId, setHotelId] = useState('')
   const [selection, setSelection] = useState<Selection>({ orgUnitId: '', positionId: '' })
   const [displayName, setDisplayName] = useState('')
+  const [mobile, setMobile] = useState('')
   const [loginName, setLoginName] = useState('')
   const [password, setPassword] = useState('')
   const [passwordConfirmation, setPasswordConfirmation] = useState('')
@@ -69,8 +77,11 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
     orgUnitId: department.id, positionId: position.id, label: `${department.name} · ${position.name}`,
   }))), [hotel])
   const hasHotelOptions = Boolean(context?.hotels.length)
+  const normalizedMobile = normalizeMainlandMobile(mobile)
+  const mobileValid = /^1[3-9]\d{9}$/.test(normalizedMobile)
   const accountValid = !context?.requiresAccountRegistration || (
     displayName.trim().length > 0
+    && mobileValid
     && /^[A-Za-z0-9][A-Za-z0-9._-]{2,119}$/.test(loginName.trim())
     && password.length >= 10 && password.length <= 128
     && password === passwordConfirmation
@@ -88,7 +99,7 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
     setBusy(true); setError(undefined)
     try {
       const result = await submitDirectoryOnboarding(
-        sessionToken, displayName.trim(), loginName.trim(), password, passwordConfirmation,
+        sessionToken, displayName.trim(), normalizedMobile, loginName.trim(), password, passwordConfirmation,
         selection.orgUnitId, selection.positionId, context.rowVersion,
       )
       setPassword(''); setPasswordConfirmation('')
@@ -124,14 +135,16 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
     <header className="wecom-onboarding-brand"><span>四</span><strong>{product.name}</strong></header>
     <section className="wecom-onboarding-card" aria-live="polite">
       <h1>{context ? '完成入职绑定' : '企业微信入职验证'}</h1>
-      <p>{context ? '企业微信身份已验证，请注册账号并补充任职信息。' : '系统只会核验您本人的企业微信身份，不公开其他员工信息。'}</p>
+      <p>{context ? (context.requiresAccountRegistration ? '企业微信身份已验证，请填写手机号、注册账号并补充任职信息。' : '企业微信身份已验证，请补充任职信息。') : '系统只会核验您本人的企业微信身份，不公开其他员工信息。'}</p>
       {context && <>
         <div className="onboarding-person"><i aria-hidden="true">人</i><span><strong>{context.invitationSource === 'MANUAL_LINK' ? '新员工注册' : context.displayName}</strong><small>企业微信成员</small></span><b>● 身份已验证</b></div>
         {context.requiresAccountRegistration && <div className="onboarding-registration-fields">
           <label>个人姓名<input value={displayName} maxLength={120} autoComplete="name" onChange={(event) => setDisplayName(event.target.value)} placeholder="请输入真实姓名" /></label>
+          <label>手机号<input type="tel" value={mobile} maxLength={20} inputMode="numeric" autoComplete="tel" onChange={(event) => setMobile(event.target.value)} placeholder="请输入本人11位手机号" /></label>
           <label>登录账号<input value={loginName} maxLength={120} autoCapitalize="none" autoComplete="username" onChange={(event) => setLoginName(event.target.value)} placeholder="3位以上字母、数字、点、下划线或短横线" /></label>
           <label>登录密码<input type="password" value={password} minLength={10} maxLength={128} autoComplete="new-password" onChange={(event) => setPassword(event.target.value)} placeholder="10至128位" /></label>
           <label>确认密码<input type="password" value={passwordConfirmation} minLength={10} maxLength={128} autoComplete="new-password" onChange={(event) => setPasswordConfirmation(event.target.value)} placeholder="请再次输入密码" /></label>
+          {mobile && !mobileValid && <small className="field-error">请输入正确的11位手机号</small>}
           {passwordConfirmation && password !== passwordConfirmation && <small className="field-error">两次输入的密码不一致</small>}
         </div>}
         {!hasHotelOptions && <div className="inline-error"><strong>暂无可申请的门店岗位</strong><p>当前没有已开放的新员工岗位，请联系行政人事确认岗位功能方案已发布并允许企微员工申请。</p></div>}

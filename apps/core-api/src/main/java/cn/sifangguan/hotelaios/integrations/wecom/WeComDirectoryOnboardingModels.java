@@ -45,6 +45,7 @@ public final class WeComDirectoryOnboardingModels {
     public record SubmitRequest(
             @NotBlank @Size(max = 512) String sessionToken,
             @Size(max = 120) String displayName,
+            @Size(max = 32) String mobile,
             @Size(max = 120) String loginName,
             @Size(max = 128) String password,
             @Size(max = 128) String passwordConfirmation,
@@ -54,7 +55,7 @@ public final class WeComDirectoryOnboardingModels {
     ) {
         @Override public String toString() {
             return "SubmitRequest[sessionToken=redacted, displayName=" + displayName
-                    + ", loginName=redacted, password=redacted, passwordConfirmation=redacted, orgUnitId=" + orgUnitId
+                    + ", mobile=redacted, loginName=redacted, password=redacted, passwordConfirmation=redacted, orgUnitId=" + orgUnitId
                     + ", positionId=" + positionId + ", expectedVersion=" + expectedVersion + "]";
         }
     }

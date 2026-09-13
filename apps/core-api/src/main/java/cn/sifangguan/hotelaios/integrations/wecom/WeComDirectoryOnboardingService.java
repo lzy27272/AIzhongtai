@@ -38,6 +38,8 @@ import static cn.sifangguan.hotelaios.integrations.wecom.WeComDirectoryOnboardin
 public class WeComDirectoryOnboardingService {
     private static final int MAX_SECRET_LENGTH = 512;
     private static final Pattern LOGIN_NAME = Pattern.compile("[a-z0-9][a-z0-9._-]{2,119}");
+    private static final Pattern MOBILE_INPUT = Pattern.compile("[+0-9\\s-]+");
+    private static final Pattern MAINLAND_MOBILE = Pattern.compile("1[3-9][0-9]{9}");
     private static final List<String> OPEN_STATES = List.of(
             "WAITING_PROFILE", "PENDING_APPROVAL", "CONFLICT");
     private final SecureRandom secureRandom = new SecureRandom();
@@ -370,10 +372,12 @@ public class WeComDirectoryOnboardingService {
         }
         requireSelectable(request.orgUnitId(), request.positionId());
         String requestedDisplayName = null;
+        String requestedMobile = null;
         String requestedLoginName = null;
         String requestedPasswordHash = null;
         if (candidate.sourceAccountId() == null) {
             requestedDisplayName = requireDisplayName(request.displayName());
+            requestedMobile = requireMobile(request.mobile());
             requestedLoginName = requireLoginName(request.loginName());
             if (!MessageDigest.isEqual(
                     safePassword(request.password()).getBytes(java.nio.charset.StandardCharsets.UTF_8),
@@ -381,6 +385,7 @@ public class WeComDirectoryOnboardingService {
                 throw new IllegalArgumentException("两次输入的密码不一致");
             }
             passwordHasher.requirePassword(request.password());
+            requireAvailableMobile(requestedMobile, candidate.id());
             requireAvailableLogin(requestedLoginName, candidate.id());
             requestedPasswordHash = passwordHasher.hash(request.password());
         }
@@ -405,6 +410,7 @@ public class WeComDirectoryOnboardingService {
                     set status = :nextStatus, requested_org_unit_id = :orgUnitId,
                         requested_position_id = :positionId, profile_submitted_at = now(),
                         requested_display_name = :requestedDisplayName,
+                        requested_mobile = :requestedMobile,
                         requested_login_name = :requestedLoginName,
                         requested_password_hash = :requestedPasswordHash,
                         registration_completed_at = case when :requestedLoginName is null
@@ -417,11 +423,15 @@ public class WeComDirectoryOnboardingService {
                     """, params().addValue("id", candidate.id()).addValue("version", request.expectedVersion())
                     .addValue("orgUnitId", request.orgUnitId()).addValue("positionId", request.positionId())
                     .addValue("requestedDisplayName", requestedDisplayName)
+                    .addValue("requestedMobile", requestedMobile)
                     .addValue("requestedLoginName", requestedLoginName)
                     .addValue("requestedPasswordHash", requestedPasswordHash)
                     .addValue("nextStatus", nextStatus).addValue("conflictingAccountId", conflictingAccountId)
                     .addValue("failureCode", conflictingAccountId == null ? null : "USER_ID_ALREADY_BOUND"));
         } catch (DuplicateKeyException exception) {
+            if (isMobileConflict(exception)) {
+                throw new IllegalArgumentException("手机号已注册");
+            }
             throw new IllegalArgumentException("登录账号已被使用，请更换后重试");
         }
         if (updated != 1) throw new IllegalArgumentException("申请已变化，请刷新后重试");
@@ -745,7 +755,8 @@ public class WeComDirectoryOnboardingService {
                     session_expires_at = null, identity_verified_at = null,
                     requested_org_unit_id = null, requested_position_id = null,
                     profile_submitted_at = null, conflicting_account_id = null,
-                    requested_display_name = null, requested_login_name = null,
+                    requested_display_name = null, requested_mobile = null,
+                    requested_login_name = null,
                     requested_password_hash = null, registration_completed_at = null,
                     failure_code = :reason,
                     decision_reason = '企业微信人员身份已变更', row_version = row_version + 1
@@ -857,7 +868,8 @@ public class WeComDirectoryOnboardingService {
                         exchange_expires_at = null, session_token_hash = null,
                         session_expires_at = null, requested_org_unit_id = null,
                         requested_position_id = null, profile_submitted_at = null,
-                        requested_display_name = null, requested_login_name = null,
+                        requested_display_name = null, requested_mobile = null,
+                        requested_login_name = null,
                         requested_password_hash = null, registration_completed_at = null,
                         conflicting_account_id = null,
                         failure_code = 'OAUTH_IDENTITY_MISMATCH',
@@ -1291,6 +1303,40 @@ public class WeComDirectoryOnboardingService {
         return normalized;
     }
 
+    private String requireMobile(String value) {
+        String raw = value == null ? "" : value.trim();
+        if (raw.isBlank() || !MOBILE_INPUT.matcher(raw).matches()) {
+            throw new IllegalArgumentException("请输入正确的11位手机号");
+        }
+        String digits = raw.replaceAll("[^0-9]", "");
+        if (digits.length() == 13 && digits.startsWith("86")) digits = digits.substring(2);
+        if (digits.length() == 15 && digits.startsWith("0086")) digits = digits.substring(4);
+        if (!MAINLAND_MOBILE.matcher(digits).matches()) {
+            throw new IllegalArgumentException("请输入正确的11位手机号");
+        }
+        return digits;
+    }
+
+    private void requireAvailableMobile(String mobile, UUID candidateId) {
+        Integer count = jdbc.queryForObject("""
+                select (
+                    (select count(*) from user_account
+                     where tenant_id = :tenantId
+                       and regexp_replace(mobile, '[^0-9]', '', 'g')
+                           in (:mobile, '86' || :mobile, '0086' || :mobile))
+                    +
+                    (select count(*) from wecom_person_onboarding
+                     where tenant_id = :tenantId and id <> :candidateId
+                       and requested_mobile = :mobile
+                       and status in ('WAITING_PROFILE','PENDING_APPROVAL','CONFLICT'))
+                )
+                """, params().addValue("mobile", mobile)
+                .addValue("candidateId", candidateId), Integer.class);
+        if (count != null && count > 0) {
+            throw new IllegalArgumentException("手机号已注册");
+        }
+    }
+
     private void requireAvailableLogin(String loginName, UUID candidateId) {
         Integer count = jdbc.queryForObject("""
                 select (
@@ -1307,6 +1353,11 @@ public class WeComDirectoryOnboardingService {
         if (count != null && count > 0) {
             throw new IllegalArgumentException("登录账号已被使用，请更换后重试");
         }
+    }
+
+    private static boolean isMobileConflict(DuplicateKeyException exception) {
+        String message = exception.getMostSpecificCause().getMessage();
+        return message != null && message.contains("ux_wecom_onboarding_open_mobile");
     }
 
     private static String safePassword(String value) { return value == null ? "" : value; }
