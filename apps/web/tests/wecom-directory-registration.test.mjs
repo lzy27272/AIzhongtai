@@ -5,10 +5,12 @@ import test from 'node:test'
 const entry = readFileSync(new URL('../src/features/wecom/WecomDirectoryOnboardingEntry.tsx', import.meta.url), 'utf8')
 const api = readFileSync(new URL('../src/features/wecom/directoryOnboardingApi.ts', import.meta.url), 'utf8')
 const bindingAdministration = readFileSync(new URL('../src/features/wecom/WecomUserBindingAdministration.tsx', import.meta.url), 'utf8')
+const onboardingAdministration = readFileSync(new URL('../src/features/wecom/WecomDirectoryOnboardingAdministration.tsx', import.meta.url), 'utf8')
 const migration = readFileSync(new URL('../../../database/migrations/V41__wecom_directory_account_registration.sql', import.meta.url), 'utf8')
 const manualInvitationMigration = readFileSync(new URL('../../../database/migrations/V42__manual_wecom_onboarding_invitation.sql', import.meta.url), 'utf8')
 const onboardingDefaultsMigration = readFileSync(new URL('../../../database/migrations/V44__enable_reviewed_wecom_onboarding_positions.sql', import.meta.url), 'utf8')
 const mobileRegistrationMigration = readFileSync(new URL('../../../database/migrations/V45__wecom_onboarding_mobile_registration.sql', import.meta.url), 'utf8')
+const pendingPositionMigration = readFileSync(new URL('../../../database/migrations/V48__wecom_onboarding_pending_position_assignment.sql', import.meta.url), 'utf8')
 
 test('verified new members register their account before choosing assignment', () => {
   assert.match(entry, /个人姓名/)
@@ -57,12 +59,18 @@ test('manual invitations store no employee profile before verified registration'
   assert.match(manualInvitationMigration, /invitation_created_by/)
 })
 
-test('registration synchronizes published positions but blocks unavailable choices', () => {
-  assert.match(entry, /暂无可申请的门店岗位/)
+test('registration hides unavailable positions and supports reviewer assignment', () => {
+  assert.match(entry, /\.filter\(\(position\) => position\.selectable\)/)
   assert.match(entry, /disabled=\{!hasHotelOptions\}/)
-  assert.match(entry, /hasSelectablePositions/)
-  assert.match(entry, /disabled=\{!item\.selectable\}/)
-  assert.match(entry, /岗位列表已同步全部已发布岗位/)
+  assert.doesNotMatch(entry, /disabled=\{!item\.selectable\}/)
+  assert.doesNotMatch(entry, /unavailableReason/)
+  assert.match(entry, /岗位待分配/)
+  assert.match(entry, /selection\.positionId \|\| undefined/)
+  assert.match(api, /positionId: positionId \|\| null/)
+  assert.match(api, /assignment-options/)
+  assert.match(onboardingAdministration, /审核分配岗位/)
+  assert.match(onboardingAdministration, /请先为员工分配具体岗位再确认启用/)
+  assert.match(pendingPositionMigration, /status <> 'APPROVED' OR requested_position_id IS NOT NULL/)
   assert.match(onboardingDefaultsMigration, /FRONT_DESK/)
   assert.match(onboardingDefaultsMigration, /protected_permission\.delegable_to_position = false/)
   assert.doesNotMatch(onboardingDefaultsMigration, /GROUP_CHAIRMAN|GROUP_GENERAL_MANAGER|GROUP_VICE_PRESIDENT|HR_KPI_ADMIN|PLATFORM_ADMIN|OTA_OPERATION_MANAGER/)

@@ -191,7 +191,7 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
     }
 
     @Test
-    void registrationOffersPublishedPositionsDirectlyAtAnActiveHotelWithoutDepartments() {
+    void registrationHidesUnavailablePositionsAndLetsReviewerAssignAPendingPosition() {
         jdbc.update("update org_unit set status = 'ACTIVE' where tenant_id = ? and id = ?",
                 TENANT, SECOND_HOTEL);
         try {
@@ -221,23 +221,21 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
                         .singleElement()
                         .satisfies(position -> assertThat(position.selectable()).isTrue());
                 assertThat(group.positions())
-                        .filteredOn(position -> "OTA运营经理".equals(position.name()))
-                        .singleElement()
-                        .satisfies(position -> {
-                            assertThat(position.selectable()).isFalse();
-                            assertThat(position.unavailableReason()).isNotBlank();
-                        });
+                        .noneMatch(position -> "OTA运营经理".equals(position.name()));
             });
 
             SubmitResponse submitted = inTransaction(() -> lifecycle.submit(new SubmitRequest(
                     session, "Hotel direct employee", "13900004601",
                     "hotel.direct." + invitation.candidateId(),
                     "Directory-Test-Password-2026", "Directory-Test-Password-2026",
-                    SECOND_HOTEL, FRONT_POSITION, context.rowVersion())));
+                    SECOND_HOTEL, null, context.rowVersion())));
 
             assertThat(submitted.status()).isEqualTo("PENDING_APPROVAL");
             assertThat(uuidValue("select requested_org_unit_id from wecom_person_onboarding where id = ?",
                     invitation.candidateId())).isEqualTo(SECOND_HOTEL);
+            assertThat(jdbc.queryForObject(
+                    "select requested_position_id is null from wecom_person_onboarding where id = ?",
+                    Boolean.class, invitation.candidateId())).isTrue();
 
             assertThat(inTransaction(() -> service.list(null)).items())
                     .filteredOn(candidate -> invitation.candidateId().equals(candidate.id()))
@@ -246,11 +244,38 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
                         assertThat(candidate.status()).isEqualTo("PENDING_APPROVAL");
                         assertThat(candidate.requestedHotelName()).isEqualTo("上海滨江店");
                         assertThat(candidate.requestedDepartmentName()).isNull();
+                        assertThat(candidate.requestedPositionId()).isNull();
                     });
+
+            jdbc.update("""
+                    update position_function_profile_version version
+                    set wecom_self_selectable = false
+                    from position_function_profile profile
+                    where version.tenant_id = profile.tenant_id
+                      and version.profile_id = profile.id
+                      and profile.tenant_id = ? and profile.position_id = ?
+                      and profile.scope_type = 'GROUP'
+                      and version.lifecycle_status = 'PUBLISHED'
+                    """, TENANT, FRONT_POSITION);
+
+            var reviewOptions = inTransaction(() -> service.reviewOptions(invitation.candidateId()));
+            assertThat(reviewOptions.hotelId()).isEqualTo(SECOND_HOTEL);
+            assertThat(reviewOptions.positions())
+                    .extracting(WeComDirectoryOnboardingModels.ReviewAssignmentOption::positionId)
+                    .contains(FRONT_POSITION);
+            assertThat(reviewOptions.positions())
+                    .noneMatch(position -> "OTA运营经理".equals(position.name()));
+
+            assertThatThrownBy(() -> inTransaction(() -> service.approve(
+                    invitation.candidateId(), new DecisionRequest(
+                            submitted.rowVersion(), "missing assignment", false))))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("请先为员工分配具体岗位再确认启用");
 
             ApprovalResponse approved = inTransaction(() -> service.approve(
                     invitation.candidateId(), new DecisionRequest(
-                            submitted.rowVersion(), "hotel direct reviewed", false)));
+                            submitted.rowVersion(), "hotel direct reviewed", false,
+                            SECOND_HOTEL, FRONT_POSITION)));
             assertThat(approved.status()).isEqualTo("APPROVED");
             assertThat(uuidValue("""
                     select assignment.org_unit_id
@@ -260,6 +285,8 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
                      and employee_item.id = assignment.employee_id
                     where employee_item.account_id = ? and assignment.status = 'ACTIVE'
                     """, approved.accountId())).isEqualTo(SECOND_HOTEL);
+            assertThat(uuidValue("select requested_position_id from wecom_person_onboarding where id = ?",
+                    invitation.candidateId())).isEqualTo(FRONT_POSITION);
         } finally {
             jdbc.update("update org_unit set status = 'INACTIVE' where tenant_id = ? and id = ?",
                     TENANT, SECOND_HOTEL);

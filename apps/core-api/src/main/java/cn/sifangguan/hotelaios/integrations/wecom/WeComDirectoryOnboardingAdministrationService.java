@@ -153,6 +153,84 @@ public class WeComDirectoryOnboardingAdministrationService {
         return new CandidateList(rows);
     }
 
+    @Transactional(readOnly = true)
+    public ReviewOptions reviewOptions(UUID candidateId) {
+        TenantPrincipal principal = prepareAny("wecom-binding.approve", "wecom-onboarding.review");
+        List<ReviewCandidate> candidates = jdbc.query("""
+                select candidate.id, candidate.status, hotel.id as hotel_id, hotel.name as hotel_name
+                from wecom_person_onboarding candidate
+                join lateral (
+                    select ancestor.id, ancestor.name
+                    from org_unit_closure closure
+                    join org_unit ancestor
+                      on ancestor.tenant_id = closure.tenant_id
+                     and ancestor.id = closure.ancestor_id
+                    where closure.tenant_id = candidate.tenant_id
+                      and closure.descendant_id = candidate.requested_org_unit_id
+                      and ancestor.unit_type = 'HOTEL' and ancestor.status = 'ACTIVE'
+                    order by closure.depth asc
+                    limit 1
+                ) hotel on true
+                where candidate.tenant_id = :tenantId and candidate.corp_id = :corpId
+                  and candidate.id = :candidateId
+                """, base(principal).addValue("candidateId", candidateId), (rs, rowNum) ->
+                new ReviewCandidate(
+                        rs.getObject("id", UUID.class), rs.getString("status"),
+                        rs.getObject("hotel_id", UUID.class), rs.getString("hotel_name")));
+        if (candidates.size() != 1) {
+            throw new IllegalArgumentException("入职申请没有可用的申请门店");
+        }
+        ReviewCandidate candidate = candidates.getFirst();
+        if (!Set.of("PENDING_APPROVAL", "CONFLICT").contains(candidate.status())) {
+            throw new IllegalArgumentException("当前状态不允许分配岗位");
+        }
+        List<ReviewAssignmentOption> positions = jdbc.query("""
+                select position.id, position.name
+                from position_definition position
+                join position_function_profile group_profile
+                  on group_profile.tenant_id = position.tenant_id
+                 and group_profile.position_id = position.id
+                 and group_profile.scope_type = 'GROUP'
+                 and group_profile.default_role_id is not null
+                join position_function_profile_version group_version
+                  on group_version.tenant_id = group_profile.tenant_id
+                 and group_version.profile_id = group_profile.id
+                 and group_version.lifecycle_status = 'PUBLISHED'
+                left join position_function_profile hotel_profile
+                  on hotel_profile.tenant_id = position.tenant_id
+                 and hotel_profile.position_id = position.id
+                 and hotel_profile.scope_type = 'HOTEL'
+                 and hotel_profile.hotel_org_unit_id = :hotelId
+                left join position_function_profile_version hotel_version
+                  on hotel_version.tenant_id = hotel_profile.tenant_id
+                 and hotel_version.profile_id = hotel_profile.id
+                 and hotel_version.lifecycle_status = 'PUBLISHED'
+                where position.tenant_id = :tenantId and position.status = 'ACTIVE'
+                  and position.deleted_at is null and position.permanently_deleted_at is null
+                  and coalesce(hotel_version.authorization_scope_type,
+                               group_version.authorization_scope_type) <> 'TENANT'
+                  and not exists (
+                      select 1
+                      from role_permission role_grant
+                      join permission protected_permission
+                        on protected_permission.id = role_grant.permission_id
+                      where role_grant.tenant_id = group_profile.tenant_id
+                        and role_grant.role_id = group_profile.default_role_id
+                        and protected_permission.delegable_to_position = false
+                  )
+                  and (position.applies_to_all_hotels = true or exists (
+                      select 1 from position_applicable_hotel applicable
+                      where applicable.tenant_id = position.tenant_id
+                        and applicable.position_id = position.id
+                        and applicable.hotel_org_unit_id = :hotelId
+                  ))
+                order by position.name, position.id
+                """, base(principal).addValue("hotelId", candidate.hotelId()), (rs, rowNum) ->
+                new ReviewAssignmentOption(
+                        candidate.hotelId(), rs.getObject("id", UUID.class), rs.getString("name")));
+        return new ReviewOptions(candidate.id(), candidate.hotelId(), candidate.hotelName(), positions);
+    }
+
     @Transactional
     public OpenInvitationResponse createOpenInvitation() {
         TenantPrincipal principal = prepare("wecom-binding.manage");
@@ -434,18 +512,36 @@ public class WeComDirectoryOnboardingAdministrationService {
             transfer = conflict;
         }
 
-        PositionGrant grant = resolvePositionGrant(principal, candidate);
+        boolean reviewerAssignedPosition = candidate.positionId() == null;
+        UUID assignmentOrgUnitId = candidate.orgUnitId();
+        UUID assignmentPositionId = candidate.positionId();
+        if (reviewerAssignedPosition) {
+            if (request.orgUnitId() == null || request.positionId() == null) {
+                throw new IllegalArgumentException("请先为员工分配具体岗位再确认启用");
+            }
+            if (!request.orgUnitId().equals(candidate.orgUnitId())) {
+                throw new IllegalArgumentException("审核分配岗位必须属于员工申请的门店");
+            }
+            assignmentOrgUnitId = request.orgUnitId();
+            assignmentPositionId = request.positionId();
+        }
+
+        PositionGrant grant = resolvePositionGrant(
+                principal, assignmentOrgUnitId, assignmentPositionId);
         if (grant == null) {
             long version = markFailure(principal, candidate,
                     "POSITION_ROLE_NOT_CONFIGURED");
             return new ApprovalResponse(candidate.id(), null, candidate.status(), null,
                     version, "岗位尚未发布可用的权限方案");
         }
-        if (!grant.selfSelectable()) {
+        if ((reviewerAssignedPosition && !grant.reviewerAssignable())
+                || (!reviewerAssignedPosition && !grant.selfSelectable())) {
             long version = markFailure(principal, candidate,
                     "POSITION_SELECTION_NO_LONGER_VALID");
             return new ApprovalResponse(candidate.id(), null, candidate.status(), null,
-                    version, "所选门店、部门或岗位已失效或不允许员工申请");
+                    version, reviewerAssignedPosition
+                    ? "所选岗位已失效、涉及受保护权限或不能由入职审核分配"
+                    : "所选门店、部门或岗位已失效或不允许员工申请");
         }
 
         UUID accountId = sourceIdentity == null ? UUID.randomUUID() : sourceIdentity.accountId();
@@ -482,11 +578,11 @@ public class WeComDirectoryOnboardingAdministrationService {
                 .addValue("loginName", loginName)
                 .addValue("passwordHash", passwordHash)
                 .addValue("employeeNo", "WECOM-" + compactEmployeeId)
-                .addValue("orgUnitId", candidate.orgUnitId())
-                .addValue("positionId", candidate.positionId())
+                .addValue("orgUnitId", assignmentOrgUnitId)
+                .addValue("positionId", assignmentPositionId)
                 .addValue("roleId", grant.roleId())
                 .addValue("scopeType", grant.scopeType())
-                .addValue("scopeOrgUnitId", scopeOrgUnitId(grant.scopeType(), candidate.orgUnitId()))
+                .addValue("scopeOrgUnitId", scopeOrgUnitId(grant.scopeType(), assignmentOrgUnitId))
                 .addValue("userId", userId)
                 .addValue("fingerprint", candidate.fingerprint())
                 .addValue("assignmentSnapshot", WeComDirectorySecretCodec.sha256(assignmentId.toString()))
@@ -595,6 +691,7 @@ public class WeComDirectoryOnboardingAdministrationService {
         int approved = jdbc.update("""
                 update wecom_person_onboarding
                 set status = 'APPROVED', failure_code = null, decision_reason = :reason,
+                    requested_org_unit_id = :orgUnitId, requested_position_id = :positionId,
                     conflicting_account_id = null, reviewed_by = :actorId, reviewed_at = now(),
                     account_id = :accountId, employee_id = :employeeId,
                     assignment_id = :assignmentId, role_assignment_id = :roleAssignmentId,
@@ -644,6 +741,9 @@ public class WeComDirectoryOnboardingAdministrationService {
         audit.put("identityReused", reuseExistingIdentity);
         audit.put("bindingTransferred", transfer != null);
         audit.put("bindingStatus", resultingBindingStatus);
+        audit.put("reviewerAssignedPosition", reviewerAssignedPosition);
+        audit.put("orgUnitId", assignmentOrgUnitId);
+        audit.put("positionId", assignmentPositionId);
         if (transfer != null) {
             audit.put("transferredFromAccountId", transfer.accountId());
             audit.put("transferReasonProvided", trimToNull(request.reason()) != null);
@@ -1007,13 +1107,26 @@ public class WeComDirectoryOnboardingAdministrationService {
         if (revoked != 1) throw stale();
     }
 
-    private PositionGrant resolvePositionGrant(TenantPrincipal principal, Candidate candidate) {
+    private PositionGrant resolvePositionGrant(
+            TenantPrincipal principal, UUID orgUnitId, UUID positionId
+    ) {
         List<PositionGrant> rows = jdbc.query("""
                 select group_profile.default_role_id,
                        coalesce(hotel_version.authorization_scope_type,
                                 group_version.authorization_scope_type) as authorization_scope_type,
                        coalesce(hotel_version.wecom_self_selectable,
-                                group_version.wecom_self_selectable) as wecom_self_selectable
+                                group_version.wecom_self_selectable) as wecom_self_selectable,
+                       (coalesce(hotel_version.authorization_scope_type,
+                                 group_version.authorization_scope_type) <> 'TENANT'
+                        and not exists (
+                          select 1
+                          from role_permission role_grant
+                          join permission protected_permission
+                            on protected_permission.id = role_grant.permission_id
+                          where role_grant.tenant_id = group_profile.tenant_id
+                            and role_grant.role_id = group_profile.default_role_id
+                            and protected_permission.delegable_to_position = false
+                        )) as reviewer_assignable
                 from org_unit department
                 join org_unit_closure closure
                   on closure.tenant_id = department.tenant_id
@@ -1054,11 +1167,12 @@ public class WeComDirectoryOnboardingAdministrationService {
                         and applicable.hotel_org_unit_id = hotel.id
                   ))
                 for update of department, hotel, position, group_profile, group_version
-                """, base(principal).addValue("orgUnitId", candidate.orgUnitId())
-                .addValue("positionId", candidate.positionId()), (rs, rowNum) -> new PositionGrant(
+                """, base(principal).addValue("orgUnitId", orgUnitId)
+                .addValue("positionId", positionId), (rs, rowNum) -> new PositionGrant(
                 rs.getObject("default_role_id", UUID.class),
                 rs.getString("authorization_scope_type"),
-                rs.getBoolean("wecom_self_selectable")
+                rs.getBoolean("wecom_self_selectable"),
+                rs.getBoolean("reviewer_assignable")
         ));
         return rows.size() == 1 ? rows.getFirst() : null;
     }
@@ -1348,7 +1462,10 @@ public class WeComDirectoryOnboardingAdministrationService {
             OffsetDateTime lastEventAt, UUID lastEventReceiptId, long rowVersion
     ) { }
 
-    private record PositionGrant(UUID roleId, String scopeType, boolean selfSelectable) { }
+    private record PositionGrant(
+            UUID roleId, String scopeType, boolean selfSelectable, boolean reviewerAssignable
+    ) { }
+    private record ReviewCandidate(UUID id, String status, UUID hotelId, String hotelName) { }
     private record BindingConflict(UUID id, UUID accountId, String status, long rowVersion) { }
     private record SourceIdentity(
             UUID bindingId, UUID accountId, UUID employeeId,

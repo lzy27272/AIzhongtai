@@ -370,7 +370,11 @@ public class WeComDirectoryOnboardingService {
         if (candidate.rowVersion() != request.expectedVersion()) {
             throw new IllegalArgumentException("申请已变化，请刷新后重试");
         }
-        requireSelectable(request.orgUnitId(), request.positionId());
+        if (request.positionId() == null) {
+            requirePendingAssignmentHotel(request.orgUnitId());
+        } else {
+            requireSelectable(request.orgUnitId(), request.positionId());
+        }
         String requestedDisplayName = null;
         String requestedMobile = null;
         String requestedLoginName = null;
@@ -443,12 +447,15 @@ public class WeComDirectoryOnboardingService {
                     "员工已验证并提交申请，但该企微身份已绑定其他账号，需二次确认。",
                     "profile-conflict");
         }
+        Map<String, Object> audit = new LinkedHashMap<>();
+        audit.put("orgUnitId", request.orgUnitId());
+        audit.put("positionId", request.positionId());
+        audit.put("positionPendingAssignment", request.positionId() == null);
+        audit.put("fingerprint", mask(candidate.fingerprint()));
+        audit.put("accountRegistration", candidate.sourceAccountId() == null);
+        audit.put("status", nextStatus);
         systemAudit("WECOM_ONBOARDING_PROFILE_SUBMITTED", "wecom_person_onboarding", candidate.id(),
-                UUID.randomUUID(), Map.of("orgUnitId", request.orgUnitId(),
-                        "positionId", request.positionId(),
-                        "fingerprint", mask(candidate.fingerprint()),
-                        "accountRegistration", candidate.sourceAccountId() == null,
-                        "status", nextStatus));
+                UUID.randomUUID(), audit);
         return new SubmitResponse(candidate.id(), nextStatus,
                 request.expectedVersion() + 1, conflictingAccountId == null
                 ? "申请已提交，等待管理员审核"
@@ -948,26 +955,22 @@ public class WeComDirectoryOnboardingService {
     }
 
     private List<HotelOption> loadOptions() {
+        Map<UUID, HotelBuilder> hotels = new LinkedHashMap<>();
+        jdbc.query("""
+                select id, name
+                from org_unit
+                where tenant_id = :tenantId and unit_type = 'HOTEL' and status = 'ACTIVE'
+                order by name, id
+                """, params(), rs -> {
+            UUID hotelId = rs.getObject("id", UUID.class);
+            hotels.put(hotelId, new HotelBuilder(hotelId, rs.getString("name")));
+        });
         List<OptionRow> rows = jdbc.query("""
                 select hotel.id as hotel_id, hotel.name as hotel_name,
                        hotel.id as department_id, hotel.name as department_name,
                        position.id as position_id, position.name as position_name,
-                       coalesce(hotel_version.wecom_self_selectable,
-                                group_version.wecom_self_selectable) as position_selectable,
-                       case
-                         when coalesce(hotel_version.wecom_self_selectable,
-                                       group_version.wecom_self_selectable) then null
-                         when exists (
-                           select 1
-                           from role_permission role_grant
-                           join permission protected_permission
-                             on protected_permission.id = role_grant.permission_id
-                           where role_grant.tenant_id = group_profile.tenant_id
-                             and role_grant.role_id = group_profile.default_role_id
-                             and protected_permission.delegable_to_position = false
-                         ) then '涉及受保护权限，需由管理员直接分配'
-                         else '尚未开放企微员工申请'
-                       end as unavailable_reason
+                       true as position_selectable,
+                       cast(null as text) as unavailable_reason
                 from org_unit hotel
                 join position_definition position
                   on position.tenant_id = hotel.tenant_id and position.status = 'ACTIVE'
@@ -992,6 +995,8 @@ public class WeComDirectoryOnboardingService {
                  and hotel_version.lifecycle_status = 'PUBLISHED'
                 where hotel.tenant_id = :tenantId and hotel.unit_type = 'HOTEL'
                   and hotel.status = 'ACTIVE'
+                  and coalesce(hotel_version.wecom_self_selectable,
+                               group_version.wecom_self_selectable) = true
                   and (position.applies_to_all_hotels = true or exists (
                       select 1 from position_applicable_hotel applicable
                       where applicable.tenant_id = position.tenant_id
@@ -1004,13 +1009,24 @@ public class WeComDirectoryOnboardingService {
                 rs.getObject("department_id", UUID.class), rs.getString("department_name"),
                 rs.getObject("position_id", UUID.class), rs.getString("position_name"),
                 rs.getBoolean("position_selectable"), rs.getString("unavailable_reason")));
-        Map<UUID, HotelBuilder> hotels = new LinkedHashMap<>();
         for (OptionRow row : rows) {
             HotelBuilder hotel = hotels.computeIfAbsent(row.hotelId(),
                     ignored -> new HotelBuilder(row.hotelId(), row.hotelName()));
             hotel.add(row);
         }
         return hotels.values().stream().map(HotelBuilder::build).toList();
+    }
+
+    private void requirePendingAssignmentHotel(UUID orgUnitId) {
+        Integer count = jdbc.queryForObject("""
+                select count(*)
+                from org_unit
+                where tenant_id = :tenantId and id = :orgUnitId
+                  and unit_type = 'HOTEL' and status = 'ACTIVE'
+                """, params().addValue("orgUnitId", orgUnitId), Integer.class);
+        if (count == null || count != 1) {
+            throw new IllegalArgumentException("所选门店已失效，不能提交岗位待分配申请");
+        }
     }
 
     private void requireSelectable(UUID orgUnitId, UUID positionId) {

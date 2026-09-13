@@ -78,10 +78,8 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
     positionId: position.id,
     label: department.id === hotel?.id ? position.name : `${department.name} · ${position.name}`,
     selectable: position.selectable,
-    unavailableReason: position.unavailableReason,
-  }))), [hotel])
+  }))).filter((position) => position.selectable), [hotel])
   const hasHotelOptions = Boolean(context?.hotels.length)
-  const hasSelectablePositions = positionOptions.some((position) => position.selectable)
   const normalizedMobile = normalizeMainlandMobile(mobile)
   const mobileValid = /^1[3-9]\d{9}$/.test(normalizedMobile)
   const accountValid = !context?.requiresAccountRegistration || (
@@ -100,12 +98,12 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
   }
 
   const submit = async () => {
-    if (!context || !sessionToken || !selection.orgUnitId || !selection.positionId || !accountValid) return
+    if (!context || !sessionToken || !selection.orgUnitId || !accountValid) return
     setBusy(true); setError(undefined)
     try {
       const result = await submitDirectoryOnboarding(
         sessionToken, displayName.trim(), normalizedMobile, loginName.trim(), password, passwordConfirmation,
-        selection.orgUnitId, selection.positionId, context.rowVersion,
+        selection.orgUnitId, selection.positionId || undefined, context.rowVersion,
       )
       setPassword(''); setPasswordConfirmation('')
       setSubmittedStatus(result.status === 'CONFLICT' ? 'CONFLICT' : 'PENDING_APPROVAL')
@@ -130,7 +128,7 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
     <section className="wecom-onboarding-card submitted" aria-live="polite">
       <div className="onboarding-success" aria-hidden="true">{conflict ? '!' : '✓'}</div><h1>申请已提交</h1><h2>{conflict ? '身份关联异常，等待管理员核对' : '等待管理员确认'}</h2>
       <p>{conflict ? '系统发现该企业微信身份已有受控关联记录，人事审核前不会启用；您无需重复提交。' : '行政人事审核通过后，注册账号、任职权限与企业微信绑定会同时启用。'}</p>
-      <dl><div><dt>门店</dt><dd>{hotel?.name ?? '—'}</dd></div><div><dt>岗位</dt><dd>{positionOptions.find((item) => item.positionId === selection.positionId)?.label ?? '—'}</dd></div><div><dt>状态</dt><dd>{conflict ? '异常待核对' : '待审核'}</dd></div></dl>
+      <dl><div><dt>门店</dt><dd>{hotel?.name ?? '—'}</dd></div><div><dt>岗位</dt><dd>{selection.positionId ? positionOptions.find((item) => item.positionId === selection.positionId)?.label ?? '—' : '岗位待分配'}</dd></div><div><dt>状态</dt><dd>{conflict ? '异常待核对' : '待审核'}</dd></div></dl>
       <button className="primary" onClick={onReturn}>返回企业微信</button>
     </section>
   </main>
@@ -152,15 +150,15 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
           {mobile && !mobileValid && <small className="field-error">请输入正确的11位手机号</small>}
           {passwordConfirmation && password !== passwordConfirmation && <small className="field-error">两次输入的密码不一致</small>}
         </div>}
-        {!hasHotelOptions && <div className="inline-error"><strong>暂无可申请的门店岗位</strong><p>当前没有已开放的新员工岗位，请联系行政人事确认岗位功能方案已发布并允许企微员工申请。</p></div>}
+        {!hasHotelOptions && <div className="inline-error"><strong>暂无可申请门店</strong><p>当前没有启用中的门店，请联系行政人事核对组织配置。</p></div>}
         <label>选择门店<select value={hotelId} disabled={!hasHotelOptions} onChange={(event) => { setHotelId(event.target.value); setSelection({ orgUnitId: '', positionId: '' }) }}><option value="">{hasHotelOptions ? '请选择门店' : '暂无可申请门店'}</option>{context.hotels.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-        <label>选择岗位<select value={`${selection.orgUnitId}:${selection.positionId}`} disabled={!hotelId || !hasSelectablePositions} onChange={(event) => { const [orgUnitId, positionId] = event.target.value.split(':'); setSelection({ orgUnitId, positionId }) }}><option value=":">{hotelId && !hasSelectablePositions ? '该门店暂无可申请岗位' : '请选择岗位'}</option>{positionOptions.map((item) => <option key={`${item.orgUnitId}:${item.positionId}`} value={`${item.orgUnitId}:${item.positionId}`} disabled={!item.selectable}>{item.selectable ? item.label : `${item.label}（${item.unavailableReason ?? '未开放申请'}）`}</option>)}</select></label>
-        {hotelId && positionOptions.some((item) => !item.selectable) && <small className="onboarding-note">岗位列表已同步全部已发布岗位；标记为未开放或受保护的岗位不可由员工自选，请由管理员直接分配或在岗位方案中开放。</small>}
+        <label>选择岗位<select value={`${selection.orgUnitId}:${selection.positionId}`} disabled={!hotelId} onChange={(event) => { const [orgUnitId, positionId] = event.target.value.split(':'); setSelection({ orgUnitId, positionId }) }}><option value=":">请选择岗位</option>{hotel && <option value={`${hotel.id}:`}>岗位待分配</option>}{positionOptions.map((item) => <option key={`${item.orgUnitId}:${item.positionId}`} value={`${item.orgUnitId}:${item.positionId}`}>{item.label}</option>)}</select></label>
+        {hotelId && <small className="onboarding-note">这里只展示后台已允许员工申请的岗位；如暂不确定，请选择“岗位待分配”，由审核员在审批时补充。</small>}
         <small className="onboarding-note">提交后由行政人事或行政人事主管审核；审核前账号不可登录，也不会开通岗位权限。</small>
       </>}
       {busy && !context && <div className="wecom-entry-progress"><div className="spinner"/><strong>正在验证企业微信身份</strong></div>}
       {error && <div className="inline-error">{error}</div>}
-      {context ? <button className="primary" disabled={busy || !selection.positionId || !accountValid} onClick={() => void submit()}>{busy ? '正在提交…' : '提交审核'}</button>
+      {context ? <button className="primary" disabled={busy || !selection.orgUnitId || !accountValid} onClick={() => void submit()}>{busy ? '正在提交…' : '提交审核'}</button>
         : entry.token && !busy ? <button className="primary" onClick={() => void start()}>使用企业微信验证身份</button> : null}
       {error && <button className="secondary" onClick={onReturn}>返回</button>}
       <small className="onboarding-privacy">绑定成功不会自动开启企业微信群推送；UserID不会在页面、通知或审计中显示。</small>

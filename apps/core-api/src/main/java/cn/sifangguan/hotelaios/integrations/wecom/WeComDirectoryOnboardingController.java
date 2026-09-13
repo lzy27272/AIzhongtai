@@ -95,6 +95,11 @@ public class WeComDirectoryOnboardingController {
         return administrationService.list(status);
     }
 
+    @GetMapping("/candidates/{candidateId}/assignment-options")
+    public ReviewOptions assignmentOptions(@PathVariable UUID candidateId) {
+        return administrationService.reviewOptions(candidateId);
+    }
+
     @PostMapping("/invitations")
     public OpenInvitationResponse createOpenInvitation() {
         return administrationService.createOpenInvitation();

@@ -31,8 +31,10 @@ export type DirectoryCandidate = {
   maskedFingerprint: string
   displayName: string
   requestedLoginName?: string
+  requestedOrgUnitId?: string
   requestedHotelName?: string
   requestedDepartmentName?: string
+  requestedPositionId?: string
   requestedPositionName?: string
   invitationSource?: 'DIRECTORY_EVENT' | 'MANUAL_LINK'
   status: DirectoryOnboardingStatus
@@ -44,6 +46,17 @@ export type DirectoryCandidate = {
   suggestedAction?: string
   updatedAt: string
   rowVersion: number
+}
+export type DirectoryReviewAssignmentOption = {
+  orgUnitId: string
+  positionId: string
+  name: string
+}
+export type DirectoryReviewOptions = {
+  candidateId: string
+  hotelId: string
+  hotelName: string
+  positions: DirectoryReviewAssignmentOption[]
 }
 export type DirectoryOpenInvitation = {
   candidateId: string
@@ -121,12 +134,12 @@ export function submitDirectoryOnboarding(
   password: string,
   passwordConfirmation: string,
   orgUnitId: string,
-  positionId: string,
+  positionId: string | undefined,
   expectedVersion: number,
 ) {
   return publicPost<DirectoryOnboardingSubmitResponse>('/integrations/wecom/directory-onboarding/submit', {
     sessionToken, displayName, mobile, loginName, password, passwordConfirmation,
-    orgUnitId, positionId, expectedVersion,
+    orgUnitId, positionId: positionId || null, expectedVersion,
   })
 }
 
@@ -144,17 +157,24 @@ export async function loadDirectoryCandidates(identity: RoleContext, status?: st
   return Array.isArray(payload) ? payload : payload.items ?? []
 }
 
+export function loadDirectoryCandidateReviewOptions(identity: RoleContext, candidate: DirectoryCandidate) {
+  return apiRequest<DirectoryReviewOptions>(`${adminBase}/${candidate.id}/assignment-options`, identity)
+}
+
 export function approveDirectoryCandidate(
   identity: RoleContext,
   candidate: DirectoryCandidate,
   reason?: string,
   transferExistingBinding = false,
+  assignment?: { orgUnitId: string; positionId: string },
 ) {
   return apiRequest<DirectoryApprovalResponse>(`${adminBase}/${candidate.id}/approve`, identity, {
     method: 'POST', body: JSON.stringify({
       expectedVersion: candidate.rowVersion,
       reason: reason || null,
       transferExistingBinding,
+      orgUnitId: assignment?.orgUnitId || null,
+      positionId: assignment?.positionId || null,
     }),
   })
 }

@@ -50,7 +50,7 @@ public final class WeComDirectoryOnboardingModels {
             @Size(max = 128) String password,
             @Size(max = 128) String passwordConfirmation,
             @NotNull UUID orgUnitId,
-            @NotNull UUID positionId,
+            UUID positionId,
             long expectedVersion
     ) {
         @Override public String toString() {
@@ -112,6 +112,19 @@ public final class WeComDirectoryOnboardingModels {
 
     public record CandidateList(List<CandidateRow> items) { }
 
+    public record ReviewAssignmentOption(
+            UUID orgUnitId,
+            UUID positionId,
+            String name
+    ) { }
+
+    public record ReviewOptions(
+            UUID candidateId,
+            UUID hotelId,
+            String hotelName,
+            List<ReviewAssignmentOption> positions
+    ) { }
+
     public record OpenInvitationResponse(
             UUID candidateId,
             URI enrollmentUrl,
@@ -124,10 +137,16 @@ public final class WeComDirectoryOnboardingModels {
     public record DecisionRequest(
             long expectedVersion,
             @Size(max = 500) String reason,
-            boolean transferExistingBinding
+            boolean transferExistingBinding,
+            UUID orgUnitId,
+            UUID positionId
     ) {
         public DecisionRequest(long expectedVersion, String reason) {
-            this(expectedVersion, reason, false);
+            this(expectedVersion, reason, false, null, null);
+        }
+
+        public DecisionRequest(long expectedVersion, String reason, boolean transferExistingBinding) {
+            this(expectedVersion, reason, transferExistingBinding, null, null);
         }
     }
 

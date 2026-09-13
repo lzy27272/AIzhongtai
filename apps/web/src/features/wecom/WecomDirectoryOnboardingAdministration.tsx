@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { RoleContext } from '../../domain'
 import {
   approveDirectoryCandidate,
+  loadDirectoryCandidateReviewOptions,
   loadDirectoryCandidates,
   loadDirectoryEvents,
   regenerateDirectoryInvitation,
@@ -11,6 +12,7 @@ import {
   type DirectoryCandidate,
   type DirectoryEventRow,
   type DirectoryOnboardingStatus,
+  type DirectoryReviewOptions,
 } from './directoryOnboardingApi'
 
 const labels: Record<DirectoryOnboardingStatus, string> = {
@@ -48,6 +50,10 @@ export function WecomDirectoryOnboardingAdministration({
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<DirectoryCandidate>()
   const [busy, setBusy] = useState(false)
+  const [reviewOptions, setReviewOptions] = useState<DirectoryReviewOptions>()
+  const [reviewAssignmentKey, setReviewAssignmentKey] = useState('')
+  const [reviewOptionsLoading, setReviewOptionsLoading] = useState(false)
+  const [reviewOptionsError, setReviewOptionsError] = useState<string>()
 
   const reload = async () => {
     setLoading(true); setError(undefined); setDirectoryEventError(undefined)
@@ -78,15 +84,41 @@ export function WecomDirectoryOnboardingAdministration({
     if (!directoryEventId || loading) return
     document.getElementById(`directory-event-${directoryEventId}`)?.scrollIntoView({ block: 'center' })
   }, [directoryEventId, directoryEvents, loading])
+  useEffect(() => {
+    setReviewOptions(undefined)
+    setReviewAssignmentKey('')
+    setReviewOptionsError(undefined)
+    setReviewOptionsLoading(false)
+    if (!selected || selected.requestedPositionId || !canApprove
+      || !['PENDING_APPROVAL', 'CONFLICT'].includes(selected.status)) return
+    let active = true
+    setReviewOptionsLoading(true)
+    void loadDirectoryCandidateReviewOptions(identity, selected)
+      .then((options) => { if (active) setReviewOptions(options) })
+      .catch((reason) => {
+        if (active) setReviewOptionsError(reason instanceof Error ? reason.message : '可分配岗位加载失败')
+      })
+      .finally(() => { if (active) setReviewOptionsLoading(false) })
+    return () => { active = false }
+  }, [selected?.id, selected?.requestedPositionId, selected?.status, canApprove, identity.key])
 
   const visible = useMemo(() => {
     const normalized = query.trim().toLowerCase()
     return items.filter((item) => !normalized || `${item.displayName} ${item.requestedLoginName ?? ''} ${item.requestedHotelName ?? ''} ${item.requestedPositionName ?? ''}`.toLowerCase().includes(normalized))
   }, [items, query])
   const count = (value: DirectoryOnboardingStatus) => items.filter((item) => item.status === value).length
+  const reviewAssignment = reviewOptions?.positions.find(
+    (position) => `${position.orgUnitId}:${position.positionId}` === reviewAssignmentKey,
+  )
+  const needsReviewerAssignment = Boolean(selected && !selected.requestedPositionId
+    && ['PENDING_APPROVAL', 'CONFLICT'].includes(selected.status))
 
   const approve = async () => {
     if (!selected || !['PENDING_APPROVAL', 'CONFLICT'].includes(selected.status)) return
+    if (needsReviewerAssignment && !reviewAssignment) {
+      setReviewOptionsError('请先为员工分配具体岗位再确认启用')
+      return
+    }
     const transfer = selected.status === 'CONFLICT'
     let reason: string | undefined
     if (transfer) {
@@ -95,12 +127,16 @@ export function WecomDirectoryOnboardingAdministration({
       if (!input?.trim()) return
       reason = input.trim()
       if (!window.confirm('最后确认：将现有企业微信绑定原子转移到本次新账号，并立即启用新任职？')) return
-    } else if (!window.confirm(`确认启用“${selected.displayName}”的中台账号、任职与企业微信绑定？`)) {
+    } else if (!window.confirm(`确认启用“${selected.displayName}”的中台账号、${reviewAssignment ? `“${reviewAssignment.name}”岗位、` : ''}任职与企业微信绑定？`)) {
       return
     }
     setBusy(true); setError(undefined)
     try {
-      const result = await approveDirectoryCandidate(identity, selected, reason, transfer)
+      const result = await approveDirectoryCandidate(identity, selected, reason, transfer,
+        reviewAssignment ? {
+          orgUnitId: reviewAssignment.orgUnitId,
+          positionId: reviewAssignment.positionId,
+        } : undefined)
       setNotice(result.status === 'APPROVED'
         ? transfer ? '身份冲突已完成审核转移并启用，群推送开关未改变' : '入职申请已确认启用，群推送开关未改变'
         : result.message)
@@ -162,7 +198,7 @@ export function WecomDirectoryOnboardingAdministration({
       <div className="directory-onboarding-filters"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option>{Object.entries(labels).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</select><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="员工、门店或岗位" /></div>
       {loading ? <div className="state-card"><div className="spinner"/><strong>正在读取入职申请</strong></div> : !visible.length ? <div className="state-card"><b>◇</b><strong>当前没有入职申请</strong><span>企业微信新增成员或员工打开一键邀请后会出现在这里。</span></div> : <div className="directory-onboarding-table">
         <div className="directory-onboarding-head"><span>员工</span><span>申请门店</span><span>申请岗位</span><span>提交时间</span><span>状态</span><span>操作</span></div>
-        {visible.map((item) => <div key={item.id}><span><strong>{item.displayName}</strong><small>{item.requestedLoginName ? `账号：${item.requestedLoginName}` : item.invitationSource === 'MANUAL_LINK' ? '管理员一键邀请' : item.maskedFingerprint}</small></span><span>{item.requestedHotelName ?? '待员工选择'}</span><span>{[item.requestedDepartmentName,item.requestedPositionName].filter(Boolean).join(' · ') || '待员工选择'}</span><span>{displayTime(item.updatedAt)}{item.invitationExpiresAt && ['WAITING_PROFILE', 'EXPIRED'].includes(item.status) && <small>{item.status === 'EXPIRED' ? '邀请已失效' : `有效期至 ${displayTime(item.invitationExpiresAt)}`}</small>}</span><span><b className={`status-pill ${item.status.toLowerCase().replaceAll('_','-')}`}>{item.expiringSoon ? '即将过期' : labels[item.status]}</b>{item.suggestedAction && <small>{item.suggestedAction}</small>}</span><span><button className="link-button" onClick={() => setSelected(item)}>{['PENDING_APPROVAL', 'CONFLICT'].includes(item.status) ? '审核' : item.retryable ? '处理故障' : item.canRegenerate ? '重新生成' : '查看'}</button></span></div>)}
+        {visible.map((item) => <div key={item.id}><span><strong>{item.displayName}</strong><small>{item.requestedLoginName ? `账号：${item.requestedLoginName}` : item.invitationSource === 'MANUAL_LINK' ? '管理员一键邀请' : item.maskedFingerprint}</small></span><span>{item.requestedHotelName ?? '待员工选择'}</span><span>{[item.requestedDepartmentName,item.requestedPositionName].filter(Boolean).join(' · ') || (item.requestedOrgUnitId ? '岗位待分配' : '待员工选择')}</span><span>{displayTime(item.updatedAt)}{item.invitationExpiresAt && ['WAITING_PROFILE', 'EXPIRED'].includes(item.status) && <small>{item.status === 'EXPIRED' ? '邀请已失效' : `有效期至 ${displayTime(item.invitationExpiresAt)}`}</small>}</span><span><b className={`status-pill ${item.status.toLowerCase().replaceAll('_','-')}`}>{item.expiringSoon ? '即将过期' : labels[item.status]}</b>{item.suggestedAction && <small>{item.suggestedAction}</small>}</span><span><button className="link-button" onClick={() => setSelected(item)}>{['PENDING_APPROVAL', 'CONFLICT'].includes(item.status) ? '审核' : item.retryable ? '处理故障' : item.canRegenerate ? '重新生成' : '查看'}</button></span></div>)}
       </div>}
     </article>
     {directoryEventError && <div className="inline-warning page-error">入职申请已正常加载；{directoryEventError}</div>}
@@ -173,11 +209,13 @@ export function WecomDirectoryOnboardingAdministration({
     </article>
     {selected && <div className="drawer-backdrop"><aside className="drawer onboarding-review-drawer"><header><div><span className="panel-kicker">EMPLOYEE REVIEW</span><h2>确认员工任职</h2></div><button className="close" onClick={() => { setSelected(undefined); onClearTarget?.() }}>×</button></header><div className="drawer-body">
       <div className="onboarding-review-person"><strong>{selected.displayName}</strong><span>企业微信身份已验证</span><code>{selected.maskedFingerprint}</code></div>
-      <dl><div><dt>注册账号</dt><dd>{selected.requestedLoginName ?? '既有账号任职变更'}</dd></div><div><dt>申请门店</dt><dd>{selected.requestedHotelName ?? '未选择'}</dd></div><div><dt>所属部门</dt><dd>{selected.requestedDepartmentName ?? '未选择'}</dd></div><div><dt>申请岗位</dt><dd>{selected.requestedPositionName ?? '未选择'}</dd></div><div><dt>当前状态</dt><dd>{labels[selected.status]}</dd></div></dl>
+      <dl><div><dt>注册账号</dt><dd>{selected.requestedLoginName ?? '既有账号任职变更'}</dd></div><div><dt>申请门店</dt><dd>{selected.requestedHotelName ?? '未选择'}</dd></div><div><dt>所属部门</dt><dd>{selected.requestedDepartmentName ?? '未选择'}</dd></div><div><dt>申请岗位</dt><dd>{selected.requestedPositionName ?? (selected.requestedOrgUnitId ? '岗位待分配' : '未选择')}</dd></div><div><dt>当前状态</dt><dd>{labels[selected.status]}</dd></div></dl>
+      {needsReviewerAssignment && canApprove && <div className="onboarding-review-assignment"><label>审核分配岗位<select value={reviewAssignmentKey} disabled={reviewOptionsLoading} onChange={(event) => { setReviewAssignmentKey(event.target.value); setReviewOptionsError(undefined) }}><option value="">{reviewOptionsLoading ? '正在加载可分配岗位…' : '请选择具体岗位'}</option>{reviewOptions?.positions.map((position) => <option key={position.positionId} value={`${position.orgUnitId}:${position.positionId}`}>{position.name}</option>)}</select></label><small>展示该门店中可由审核员安全分配的已发布岗位；受保护的集团岗位仍需在组织与权限中直接分配。</small></div>}
+      {reviewOptionsError && <div className="inline-error">{reviewOptionsError}</div>}
       {selected.status === 'CONFLICT' && <div className="inline-error">该企业微信身份已绑定其他中台账号。仅可在填写原因并完成两次确认后转移；原账号会话会立即失效。</div>}
       {selected.suggestedAction && <div className={selected.retryable || selected.status === 'EXPIRED' ? 'inline-warning' : 'inline-error'}>{selected.suggestedAction}</div>}
       {!canApprove && ['PENDING_APPROVAL', 'CONFLICT'].includes(selected.status) && <div className="inline-warning">当前账号只有查看权限，请由行政人事或行政人事主管完成审核。</div>}
       <div className="inline-warning">确认后将原子创建或启用员工档案、账号、任职、岗位权限和企业微信绑定；不会开启群推送。</div>
-    </div><footer><button className="secondary" onClick={() => { setSelected(undefined); onClearTarget?.() }}>取消</button>{canManage && selected.retryable && <button className="primary" disabled={busy} onClick={() => void retry('retry')}>{busy ? '处理中…' : '技术重试'}</button>}{canManage && selected.canRegenerate && <button className="primary" disabled={busy} onClick={() => void retry('regenerate')}>{busy ? '处理中…' : '重新生成邀请'}</button>}{canApprove && ['PENDING_APPROVAL','CONFLICT'].includes(selected.status) && <button className="secondary" disabled={busy} onClick={() => void reject()}>拒绝</button>}{canApprove && ['PENDING_APPROVAL','CONFLICT'].includes(selected.status) && <button className="primary" disabled={busy} onClick={() => void approve()}>{busy ? '处理中…' : selected.status === 'CONFLICT' ? '确认转移并启用' : '确认启用'}</button>}</footer></aside></div>}
+    </div><footer><button className="secondary" onClick={() => { setSelected(undefined); onClearTarget?.() }}>取消</button>{canManage && selected.retryable && <button className="primary" disabled={busy} onClick={() => void retry('retry')}>{busy ? '处理中…' : '技术重试'}</button>}{canManage && selected.canRegenerate && <button className="primary" disabled={busy} onClick={() => void retry('regenerate')}>{busy ? '处理中…' : '重新生成邀请'}</button>}{canApprove && ['PENDING_APPROVAL','CONFLICT'].includes(selected.status) && <button className="secondary" disabled={busy} onClick={() => void reject()}>拒绝</button>}{canApprove && ['PENDING_APPROVAL','CONFLICT'].includes(selected.status) && <button className="primary" disabled={busy || reviewOptionsLoading || (needsReviewerAssignment && !reviewAssignment)} onClick={() => void approve()}>{busy ? '处理中…' : selected.status === 'CONFLICT' ? '确认转移并启用' : needsReviewerAssignment ? '分配并启用' : '确认启用'}</button>}</footer></aside></div>}
   </section>
 }
