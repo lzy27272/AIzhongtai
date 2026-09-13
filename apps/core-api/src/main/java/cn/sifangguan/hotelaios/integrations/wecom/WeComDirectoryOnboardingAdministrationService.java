@@ -93,7 +93,8 @@ public class WeComDirectoryOnboardingAdministrationService {
                        candidate.invitation_source,
                        candidate.requested_org_unit_id,
                        hotel.name as requested_hotel_name,
-                       department.name as requested_department_name,
+                       case when department.unit_type = 'DEPARTMENT'
+                            then department.name end as requested_department_name,
                        candidate.requested_position_id,
                        position.name as requested_position_name,
                        candidate.status, candidate.failure_code,

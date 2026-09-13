@@ -54,6 +54,7 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
     private static final UUID TENANT = UUID.fromString("10000000-0000-0000-0000-000000000001");
     private static final UUID CEO = UUID.fromString("19000000-0000-0000-0000-000000000001");
     private static final UUID FRONT_ACCOUNT = UUID.fromString("19000000-0000-0000-0000-000000000003");
+    private static final UUID SECOND_HOTEL = UUID.fromString("12000000-0000-0000-0000-000000000004");
     private static final UUID FRONT_DEPARTMENT = UUID.fromString("12000000-0000-0000-0000-000000000005");
     private static final UUID HOUSEKEEPING_DEPARTMENT = UUID.fromString("12000000-0000-0000-0000-000000000006");
     private static final UUID FRONT_POSITION = UUID.fromString("14000000-0000-0000-0000-000000000001");
@@ -187,6 +188,49 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
                 .containsEntry("requested_org_unit_id", null)
                 .containsEntry("requested_position_id", null);
         assertThat(codec.decrypt((String) row.get("user_id_ciphertext"))).isEqualTo(userId);
+    }
+
+    @Test
+    void registrationOffersPublishedPositionsDirectlyAtAnActiveHotelWithoutDepartments() {
+        jdbc.update("update org_unit set status = 'ACTIVE' where tenant_id = ? and id = ?",
+                TENANT, SECOND_HOTEL);
+        try {
+            OpenInvitationResponse invitation = inTransaction(service::createOpenInvitation);
+            WeComDirectoryOnboardingService lifecycle = lifecycleService();
+            inTransaction(() -> lifecycle.completeOAuth(
+                    invitation.candidateId(), "hotel-direct-" + UUID.randomUUID()));
+            String session = "hotel-direct-session-" + UUID.randomUUID();
+            jdbc.update("""
+                    update wecom_person_onboarding
+                    set session_token_hash = ?, session_expires_at = now() + interval '10 minutes'
+                    where id = ?
+                    """, WeComDirectorySecretCodec.sha256(session), invitation.candidateId());
+
+            var context = inTransaction(() -> lifecycle.context(session));
+            var hotel = context.hotels().stream()
+                    .filter(option -> SECOND_HOTEL.equals(option.id()))
+                    .findFirst()
+                    .orElseThrow();
+            assertThat(hotel.departments()).singleElement().satisfies(group -> {
+                assertThat(group.id()).isEqualTo(SECOND_HOTEL);
+                assertThat(group.positions())
+                        .extracting(WeComDirectoryOnboardingModels.PositionOption::id)
+                        .contains(FRONT_POSITION);
+            });
+
+            SubmitResponse submitted = inTransaction(() -> lifecycle.submit(new SubmitRequest(
+                    session, "Hotel direct employee", "13900004601",
+                    "hotel.direct." + invitation.candidateId(),
+                    "Directory-Test-Password-2026", "Directory-Test-Password-2026",
+                    SECOND_HOTEL, FRONT_POSITION, context.rowVersion())));
+
+            assertThat(submitted.status()).isEqualTo("PENDING_APPROVAL");
+            assertThat(uuidValue("select requested_org_unit_id from wecom_person_onboarding where id = ?",
+                    invitation.candidateId())).isEqualTo(SECOND_HOTEL);
+        } finally {
+            jdbc.update("update org_unit set status = 'INACTIVE' where tenant_id = ? and id = ?",
+                    TENANT, SECOND_HOTEL);
+        }
     }
 
     @Test

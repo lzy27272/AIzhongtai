@@ -65,3 +65,8 @@ test('registration explains unavailable options and never exposes protected posi
   assert.match(onboardingDefaultsMigration, /protected_permission\.delegable_to_position = false/)
   assert.doesNotMatch(onboardingDefaultsMigration, /GROUP_CHAIRMAN|GROUP_GENERAL_MANAGER|GROUP_VICE_PRESIDENT|HR_KPI_ADMIN|PLATFORM_ADMIN|OTA_OPERATION_MANAGER/)
 })
+
+test('hotel-direct positions do not repeat the hotel name in the position selector', () => {
+  assert.match(entry, /department\.id === hotel\?\.id \? position\.name/)
+  assert.match(entry, /`\$\{department\.name\} · \$\{position\.name\}`/)
+})

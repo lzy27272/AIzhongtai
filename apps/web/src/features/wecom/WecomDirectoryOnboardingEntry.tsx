@@ -74,7 +74,9 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
 
   const hotel = context?.hotels.find((item) => item.id === hotelId)
   const positionOptions = useMemo(() => (hotel?.departments ?? []).flatMap((department) => department.positions.map((position) => ({
-    orgUnitId: department.id, positionId: position.id, label: `${department.name} · ${position.name}`,
+    orgUnitId: department.id,
+    positionId: position.id,
+    label: department.id === hotel?.id ? position.name : `${department.name} · ${position.name}`,
   }))), [hotel])
   const hasHotelOptions = Boolean(context?.hotels.length)
   const normalizedMobile = normalizeMainlandMobile(mobile)

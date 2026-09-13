@@ -950,15 +950,9 @@ public class WeComDirectoryOnboardingService {
     private List<HotelOption> loadOptions() {
         List<OptionRow> rows = jdbc.query("""
                 select hotel.id as hotel_id, hotel.name as hotel_name,
-                       department.id as department_id, department.name as department_name,
+                       hotel.id as department_id, hotel.name as department_name,
                        position.id as position_id, position.name as position_name
                 from org_unit hotel
-                join org_unit_closure closure
-                  on closure.tenant_id = hotel.tenant_id and closure.ancestor_id = hotel.id
-                join org_unit department
-                  on department.tenant_id = closure.tenant_id
-                 and department.id = closure.descendant_id
-                 and department.unit_type = 'DEPARTMENT' and department.status = 'ACTIVE'
                 join position_definition position
                   on position.tenant_id = hotel.tenant_id and position.status = 'ACTIVE'
                  and position.deleted_at is null and position.permanently_deleted_at is null
@@ -990,7 +984,7 @@ public class WeComDirectoryOnboardingService {
                         and applicable.position_id = position.id
                         and applicable.hotel_org_unit_id = hotel.id
                   ))
-                order by hotel.name, department.name, position.name, position.id
+                order by hotel.name, position.name, position.id
                 """, params(), (rs, rowNum) -> new OptionRow(
                 rs.getObject("hotel_id", UUID.class), rs.getString("hotel_name"),
                 rs.getObject("department_id", UUID.class), rs.getString("department_name"),
@@ -1007,15 +1001,15 @@ public class WeComDirectoryOnboardingService {
     private void requireSelectable(UUID orgUnitId, UUID positionId) {
         Integer count = jdbc.queryForObject("""
                 select count(*)
-                from org_unit department
+                from org_unit assignment_org
                 join org_unit_closure closure
-                  on closure.tenant_id = department.tenant_id
-                 and closure.descendant_id = department.id
+                  on closure.tenant_id = assignment_org.tenant_id
+                 and closure.descendant_id = assignment_org.id
                 join org_unit hotel
                   on hotel.tenant_id = closure.tenant_id and hotel.id = closure.ancestor_id
                  and hotel.unit_type = 'HOTEL' and hotel.status = 'ACTIVE'
                 join position_definition position
-                  on position.tenant_id = department.tenant_id and position.id = :positionId
+                  on position.tenant_id = assignment_org.tenant_id and position.id = :positionId
                  and position.status = 'ACTIVE' and position.deleted_at is null
                  and position.permanently_deleted_at is null
                 join position_function_profile group_profile
@@ -1036,8 +1030,9 @@ public class WeComDirectoryOnboardingService {
                   on hotel_version.tenant_id = hotel_profile.tenant_id
                  and hotel_version.profile_id = hotel_profile.id
                  and hotel_version.lifecycle_status = 'PUBLISHED'
-                where department.tenant_id = :tenantId and department.id = :orgUnitId
-                  and department.unit_type = 'DEPARTMENT' and department.status = 'ACTIVE'
+                where assignment_org.tenant_id = :tenantId and assignment_org.id = :orgUnitId
+                  and assignment_org.unit_type in ('HOTEL', 'DEPARTMENT')
+                  and assignment_org.status = 'ACTIVE'
                   and coalesce(hotel_version.wecom_self_selectable,
                                group_version.wecom_self_selectable) = true
                   and (position.applies_to_all_hotels = true or exists (
