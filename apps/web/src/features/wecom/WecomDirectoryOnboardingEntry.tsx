@@ -77,8 +77,11 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
     orgUnitId: department.id,
     positionId: position.id,
     label: department.id === hotel?.id ? position.name : `${department.name} · ${position.name}`,
+    selectable: position.selectable,
+    unavailableReason: position.unavailableReason,
   }))), [hotel])
   const hasHotelOptions = Boolean(context?.hotels.length)
+  const hasSelectablePositions = positionOptions.some((position) => position.selectable)
   const normalizedMobile = normalizeMainlandMobile(mobile)
   const mobileValid = /^1[3-9]\d{9}$/.test(normalizedMobile)
   const accountValid = !context?.requiresAccountRegistration || (
@@ -151,7 +154,8 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
         </div>}
         {!hasHotelOptions && <div className="inline-error"><strong>暂无可申请的门店岗位</strong><p>当前没有已开放的新员工岗位，请联系行政人事确认岗位功能方案已发布并允许企微员工申请。</p></div>}
         <label>选择门店<select value={hotelId} disabled={!hasHotelOptions} onChange={(event) => { setHotelId(event.target.value); setSelection({ orgUnitId: '', positionId: '' }) }}><option value="">{hasHotelOptions ? '请选择门店' : '暂无可申请门店'}</option>{context.hotels.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-        <label>选择岗位<select value={`${selection.orgUnitId}:${selection.positionId}`} disabled={!hotelId || positionOptions.length === 0} onChange={(event) => { const [orgUnitId, positionId] = event.target.value.split(':'); setSelection({ orgUnitId, positionId }) }}><option value=":">{hotelId && positionOptions.length === 0 ? '该门店暂无可申请岗位' : '请选择岗位'}</option>{positionOptions.map((item) => <option key={`${item.orgUnitId}:${item.positionId}`} value={`${item.orgUnitId}:${item.positionId}`}>{item.label}</option>)}</select></label>
+        <label>选择岗位<select value={`${selection.orgUnitId}:${selection.positionId}`} disabled={!hotelId || !hasSelectablePositions} onChange={(event) => { const [orgUnitId, positionId] = event.target.value.split(':'); setSelection({ orgUnitId, positionId }) }}><option value=":">{hotelId && !hasSelectablePositions ? '该门店暂无可申请岗位' : '请选择岗位'}</option>{positionOptions.map((item) => <option key={`${item.orgUnitId}:${item.positionId}`} value={`${item.orgUnitId}:${item.positionId}`} disabled={!item.selectable}>{item.selectable ? item.label : `${item.label}（${item.unavailableReason ?? '未开放申请'}）`}</option>)}</select></label>
+        {hotelId && positionOptions.some((item) => !item.selectable) && <small className="onboarding-note">岗位列表已同步全部已发布岗位；标记为未开放或受保护的岗位不可由员工自选，请由管理员直接分配或在岗位方案中开放。</small>}
         <small className="onboarding-note">提交后由行政人事或行政人事主管审核；审核前账号不可登录，也不会开通岗位权限。</small>
       </>}
       {busy && !context && <div className="wecom-entry-progress"><div className="spinner"/><strong>正在验证企业微信身份</strong></div>}

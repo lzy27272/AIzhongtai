@@ -951,7 +951,23 @@ public class WeComDirectoryOnboardingService {
         List<OptionRow> rows = jdbc.query("""
                 select hotel.id as hotel_id, hotel.name as hotel_name,
                        hotel.id as department_id, hotel.name as department_name,
-                       position.id as position_id, position.name as position_name
+                       position.id as position_id, position.name as position_name,
+                       coalesce(hotel_version.wecom_self_selectable,
+                                group_version.wecom_self_selectable) as position_selectable,
+                       case
+                         when coalesce(hotel_version.wecom_self_selectable,
+                                       group_version.wecom_self_selectable) then null
+                         when exists (
+                           select 1
+                           from role_permission role_grant
+                           join permission protected_permission
+                             on protected_permission.id = role_grant.permission_id
+                           where role_grant.tenant_id = group_profile.tenant_id
+                             and role_grant.role_id = group_profile.default_role_id
+                             and protected_permission.delegable_to_position = false
+                         ) then '涉及受保护权限，需由管理员直接分配'
+                         else '尚未开放企微员工申请'
+                       end as unavailable_reason
                 from org_unit hotel
                 join position_definition position
                   on position.tenant_id = hotel.tenant_id and position.status = 'ACTIVE'
@@ -976,8 +992,6 @@ public class WeComDirectoryOnboardingService {
                  and hotel_version.lifecycle_status = 'PUBLISHED'
                 where hotel.tenant_id = :tenantId and hotel.unit_type = 'HOTEL'
                   and hotel.status = 'ACTIVE'
-                  and coalesce(hotel_version.wecom_self_selectable,
-                               group_version.wecom_self_selectable) = true
                   and (position.applies_to_all_hotels = true or exists (
                       select 1 from position_applicable_hotel applicable
                       where applicable.tenant_id = position.tenant_id
@@ -988,7 +1002,8 @@ public class WeComDirectoryOnboardingService {
                 """, params(), (rs, rowNum) -> new OptionRow(
                 rs.getObject("hotel_id", UUID.class), rs.getString("hotel_name"),
                 rs.getObject("department_id", UUID.class), rs.getString("department_name"),
-                rs.getObject("position_id", UUID.class), rs.getString("position_name")));
+                rs.getObject("position_id", UUID.class), rs.getString("position_name"),
+                rs.getBoolean("position_selectable"), rs.getString("unavailable_reason")));
         Map<UUID, HotelBuilder> hotels = new LinkedHashMap<>();
         for (OptionRow row : rows) {
             HotelBuilder hotel = hotels.computeIfAbsent(row.hotelId(),
@@ -1429,7 +1444,8 @@ public class WeComDirectoryOnboardingService {
     private record ExpiredCandidate(UUID id, String fingerprint) { }
     private record OptionRow(
             UUID hotelId, String hotelName, UUID departmentId, String departmentName,
-            UUID positionId, String positionName
+            UUID positionId, String positionName, boolean positionSelectable,
+            String unavailableReason
     ) { }
 
     private static final class HotelBuilder {
@@ -1440,7 +1456,8 @@ public class WeComDirectoryOnboardingService {
         private void add(OptionRow row) {
             departments.computeIfAbsent(row.departmentId(),
                     ignored -> new DepartmentBuilder(row.departmentId(), row.departmentName()))
-                    .add(row.positionId(), row.positionName());
+                    .add(row.positionId(), row.positionName(), row.positionSelectable(),
+                            row.unavailableReason());
         }
         private HotelOption build() {
             return new HotelOption(id, name, departments.values().stream().map(DepartmentBuilder::build).toList());
@@ -1452,7 +1469,9 @@ public class WeComDirectoryOnboardingService {
         private final String name;
         private final List<PositionOption> positions = new ArrayList<>();
         private DepartmentBuilder(UUID id, String name) { this.id = id; this.name = name; }
-        private void add(UUID id, String name) { positions.add(new PositionOption(id, name)); }
+        private void add(UUID id, String name, boolean selectable, String unavailableReason) {
+            positions.add(new PositionOption(id, name, selectable, unavailableReason));
+        }
         private DepartmentOption build() { return new DepartmentOption(id, name, List.copyOf(positions)); }
     }
 }

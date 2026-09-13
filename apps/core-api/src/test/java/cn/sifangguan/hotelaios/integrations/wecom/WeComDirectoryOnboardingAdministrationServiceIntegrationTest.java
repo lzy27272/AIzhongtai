@@ -216,6 +216,17 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
                 assertThat(group.positions())
                         .extracting(WeComDirectoryOnboardingModels.PositionOption::id)
                         .contains(FRONT_POSITION);
+                assertThat(group.positions())
+                        .filteredOn(position -> "前台员工".equals(position.name()))
+                        .singleElement()
+                        .satisfies(position -> assertThat(position.selectable()).isTrue());
+                assertThat(group.positions())
+                        .filteredOn(position -> "OTA运营经理".equals(position.name()))
+                        .singleElement()
+                        .satisfies(position -> {
+                            assertThat(position.selectable()).isFalse();
+                            assertThat(position.unavailableReason()).isNotBlank();
+                        });
             });
 
             SubmitResponse submitted = inTransaction(() -> lifecycle.submit(new SubmitRequest(
@@ -227,6 +238,28 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
             assertThat(submitted.status()).isEqualTo("PENDING_APPROVAL");
             assertThat(uuidValue("select requested_org_unit_id from wecom_person_onboarding where id = ?",
                     invitation.candidateId())).isEqualTo(SECOND_HOTEL);
+
+            assertThat(inTransaction(() -> service.list(null)).items())
+                    .filteredOn(candidate -> invitation.candidateId().equals(candidate.id()))
+                    .singleElement()
+                    .satisfies(candidate -> {
+                        assertThat(candidate.status()).isEqualTo("PENDING_APPROVAL");
+                        assertThat(candidate.requestedHotelName()).isEqualTo("上海滨江店");
+                        assertThat(candidate.requestedDepartmentName()).isNull();
+                    });
+
+            ApprovalResponse approved = inTransaction(() -> service.approve(
+                    invitation.candidateId(), new DecisionRequest(
+                            submitted.rowVersion(), "hotel direct reviewed", false)));
+            assertThat(approved.status()).isEqualTo("APPROVED");
+            assertThat(uuidValue("""
+                    select assignment.org_unit_id
+                    from employee_position_assignment assignment
+                    join employee employee_item
+                      on employee_item.tenant_id = assignment.tenant_id
+                     and employee_item.id = assignment.employee_id
+                    where employee_item.account_id = ? and assignment.status = 'ACTIVE'
+                    """, approved.accountId())).isEqualTo(SECOND_HOTEL);
         } finally {
             jdbc.update("update org_unit set status = 'INACTIVE' where tenant_id = ? and id = ?",
                     TENANT, SECOND_HOTEL);

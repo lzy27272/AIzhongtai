@@ -42,6 +42,7 @@ export function WecomDirectoryOnboardingAdministration({
   const [directoryEvents, setDirectoryEvents] = useState<DirectoryEventRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
+  const [directoryEventError, setDirectoryEventError] = useState<string>()
   const [notice, setNotice] = useState<string>()
   const [status, setStatus] = useState('')
   const [query, setQuery] = useState('')
@@ -49,14 +50,19 @@ export function WecomDirectoryOnboardingAdministration({
   const [busy, setBusy] = useState(false)
 
   const reload = async () => {
-    setLoading(true); setError(undefined)
+    setLoading(true); setError(undefined); setDirectoryEventError(undefined)
     try {
-      const [candidates, events] = await Promise.all([
+      const [candidates, events] = await Promise.allSettled([
         loadDirectoryCandidates(identity, status || undefined),
         canManage ? loadDirectoryEvents(identity) : Promise.resolve([]),
       ])
-      setItems(candidates)
-      setDirectoryEvents(events)
+      if (candidates.status === 'rejected') throw candidates.reason
+      setItems(candidates.value)
+      if (events.status === 'fulfilled') setDirectoryEvents(events.value)
+      else {
+        setDirectoryEvents([])
+        setDirectoryEventError(events.reason instanceof Error ? events.reason.message : '人员同步异常列表加载失败')
+      }
     }
     catch (reason) { setError(reason instanceof Error ? reason.message : '企微入职申请加载失败') }
     finally { setLoading(false) }
@@ -159,6 +165,7 @@ export function WecomDirectoryOnboardingAdministration({
         {visible.map((item) => <div key={item.id}><span><strong>{item.displayName}</strong><small>{item.requestedLoginName ? `账号：${item.requestedLoginName}` : item.invitationSource === 'MANUAL_LINK' ? '管理员一键邀请' : item.maskedFingerprint}</small></span><span>{item.requestedHotelName ?? '待员工选择'}</span><span>{[item.requestedDepartmentName,item.requestedPositionName].filter(Boolean).join(' · ') || '待员工选择'}</span><span>{displayTime(item.updatedAt)}{item.invitationExpiresAt && ['WAITING_PROFILE', 'EXPIRED'].includes(item.status) && <small>{item.status === 'EXPIRED' ? '邀请已失效' : `有效期至 ${displayTime(item.invitationExpiresAt)}`}</small>}</span><span><b className={`status-pill ${item.status.toLowerCase().replaceAll('_','-')}`}>{item.expiringSoon ? '即将过期' : labels[item.status]}</b>{item.suggestedAction && <small>{item.suggestedAction}</small>}</span><span><button className="link-button" onClick={() => setSelected(item)}>{['PENDING_APPROVAL', 'CONFLICT'].includes(item.status) ? '审核' : item.retryable ? '处理故障' : item.canRegenerate ? '重新生成' : '查看'}</button></span></div>)}
       </div>}
     </article>
+    {directoryEventError && <div className="inline-warning page-error">入职申请已正常加载；{directoryEventError}</div>}
     <article className="panel table-panel directory-event-panel"><header><div><span className="panel-kicker">DIRECTORY SYNC EXCEPTIONS</span><h2>人员同步技术异常</h2><p>仅显示脱敏原因和建议动作；身份冲突仍须走审核流程，不能在这里重试。</p></div><span className={`status-pill ${directoryEvents.length ? 'conflict' : 'approved'}`}>{directoryEvents.length ? `${directoryEvents.length} 项待处理` : '运行正常'}</span></header>
       {!directoryEvents.length ? <div className="directory-event-empty">当前没有需要管理员处理的企业微信人员同步异常。</div> : <div className="directory-event-list">
         {directoryEvents.map((event) => <div id={`directory-event-${event.id}`} className={directoryEventId === event.id ? 'notification-target' : undefined} key={event.id}><span><strong>{event.changeType || '成员变更'}</strong><small>{displayTime(event.receivedAt)}</small></span><span><strong>{event.errorMessage}</strong><small>{event.lastErrorCode || 'TECHNICAL_FAILURE'}</small></span><span>{event.suggestedAction}</span><span>{canApprove ? <button className="secondary" disabled={busy} onClick={() => void retryEvent(event)}>{busy ? '处理中…' : '重试'}</button> : <small>请由有审核权限的管理员处理</small>}</span></div>)}

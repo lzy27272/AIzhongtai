@@ -16,6 +16,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
+import java.sql.Types;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -84,7 +85,8 @@ public class WeComDirectoryOnboardingAdministrationService {
         TenantPrincipal principal = prepareAny("wecom-binding.read", "wecom-onboarding.review");
         employeeService.expireDueInvitations();
         String status = normalizeStatus(requestedStatus);
-        MapSqlParameterSource parameters = base(principal).addValue("status", status);
+        MapSqlParameterSource parameters = base(principal)
+                .addValue("status", status, Types.VARCHAR);
         List<CandidateRow> rows = jdbc.query("""
                 select candidate.id, candidate.user_id_fingerprint,
                        coalesce(candidate.requested_display_name, candidate.display_name) as display_name,
@@ -140,7 +142,7 @@ public class WeComDirectoryOnboardingAdministrationService {
                     rs.getObject("requested_position_id", UUID.class),
                     rs.getString("requested_position_name"), candidateStatus,
                     failureCode, expiresAt, expiringSoon,
-                    TECHNICAL_RETRY_FAILURES.contains(failureCode),
+                    failureCode != null && TECHNICAL_RETRY_FAILURES.contains(failureCode),
                     "EXPIRED".equals(candidateStatus)
                             && "DIRECTORY_EVENT".equals(rs.getString("invitation_source")),
                     suggestedAction(candidateStatus, failureCode, expiringSoon,
@@ -1043,7 +1045,8 @@ public class WeComDirectoryOnboardingAdministrationService {
                  and hotel_version.profile_id = hotel_profile.id
                  and hotel_version.lifecycle_status = 'PUBLISHED'
                 where department.tenant_id = :tenantId and department.id = :orgUnitId
-                  and department.unit_type = 'DEPARTMENT' and department.status = 'ACTIVE'
+                  and department.unit_type in ('HOTEL', 'DEPARTMENT')
+                  and department.status = 'ACTIVE'
                   and (position.applies_to_all_hotels = true or exists (
                       select 1 from position_applicable_hotel applicable
                       where applicable.tenant_id = position.tenant_id
@@ -1252,7 +1255,7 @@ public class WeComDirectoryOnboardingAdministrationService {
             return "原链接已失效，请重新点击一键邀请生成新链接";
         }
         if ("EXPIRED".equals(status)) return "管理员重新生成邀请；原链接不可恢复";
-        if (TECHNICAL_RETRY_FAILURES.contains(failureCode)) {
+        if (failureCode != null && TECHNICAL_RETRY_FAILURES.contains(failureCode)) {
             return "管理员点击重试；系统会轮换凭据并发送新的120分钟邀请";
         }
         if ("USER_ID_ALREADY_BOUND".equals(failureCode) || "CONFLICT".equals(status)) {

@@ -57,10 +57,12 @@ test('manual invitations store no employee profile before verified registration'
   assert.match(manualInvitationMigration, /invitation_created_by/)
 })
 
-test('registration explains unavailable options and never exposes protected positions by default', () => {
+test('registration synchronizes published positions but blocks unavailable choices', () => {
   assert.match(entry, /暂无可申请的门店岗位/)
   assert.match(entry, /disabled=\{!hasHotelOptions\}/)
-  assert.match(entry, /positionOptions\.length === 0/)
+  assert.match(entry, /hasSelectablePositions/)
+  assert.match(entry, /disabled=\{!item\.selectable\}/)
+  assert.match(entry, /岗位列表已同步全部已发布岗位/)
   assert.match(onboardingDefaultsMigration, /FRONT_DESK/)
   assert.match(onboardingDefaultsMigration, /protected_permission\.delegable_to_position = false/)
   assert.doesNotMatch(onboardingDefaultsMigration, /GROUP_CHAIRMAN|GROUP_GENERAL_MANAGER|GROUP_VICE_PRESIDENT|HR_KPI_ADMIN|PLATFORM_ADMIN|OTA_OPERATION_MANAGER/)

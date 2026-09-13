@@ -2,7 +2,12 @@ import { apiBase, apiRequest, ApiError } from '../../api/client'
 import type { RoleContext } from '../../domain'
 
 export type DirectoryOnboardingStatus = 'WAITING_PROFILE' | 'PENDING_APPROVAL' | 'CONFLICT' | 'APPROVED' | 'REJECTED' | 'CANCELLED' | 'EXPIRED'
-export type DirectoryPositionOption = { id: string; name: string }
+export type DirectoryPositionOption = {
+  id: string
+  name: string
+  selectable: boolean
+  unavailableReason?: string
+}
 export type DirectoryDepartmentOption = { id: string; name: string; positions: DirectoryPositionOption[] }
 export type DirectoryHotelOption = { id: string; name: string; departments: DirectoryDepartmentOption[] }
 export type DirectoryOnboardingContext = {
