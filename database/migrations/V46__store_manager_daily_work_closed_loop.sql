@@ -240,7 +240,12 @@ INSERT INTO work_package_version
 VALUES
     ('46030000-0000-0000-0000-000000000001',
      '10000000-0000-0000-0000-000000000001',
-     '42000000-0000-0000-0000-000000000004', 2, 'DRAFT',
+     '42000000-0000-0000-0000-000000000004',
+     (SELECT coalesce(max(version_no), 0) + 1
+      FROM work_package_version
+      WHERE tenant_id = '10000000-0000-0000-0000-000000000001'
+        AND work_package_definition_id = '42000000-0000-0000-0000-000000000004'),
+     'DRAFT',
      '店长每日工作闭环 V2',
      '仪容仪表与晨会、公共区域巡检的分时督办和证据闭环。',
      encode(digest('STORE-MANAGER-DAILY-CLOSED-LOOP-V1', 'sha256'), 'hex'),

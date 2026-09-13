@@ -135,7 +135,12 @@ INSERT INTO work_package_version
      description, content_hash, created_by)
 VALUES
     ('47030000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001',
-     '42000000-0000-0000-0000-000000000004',3,'DRAFT',
+     '42000000-0000-0000-0000-000000000004',
+     (SELECT coalesce(max(version_no),0)+1
+      FROM work_package_version
+      WHERE tenant_id='10000000-0000-0000-0000-000000000001'
+        AND work_package_definition_id='42000000-0000-0000-0000-000000000004'),
+     'DRAFT',
      '店长每日巡查与工作记录试点 V2',
      '按2026-09-13试点表执行早餐、晨会、公区、带教、查房、沟通表与晚间公区七段闭环。',
      encode(digest('STORE-MANAGER-PILOT-TEMPLATE-V2','sha256'),'hex'),
