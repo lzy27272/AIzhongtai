@@ -51,7 +51,8 @@ public class OrganizationService {
         String visibility = visibility("o", principal, parameters);
         return jdbc.queryForList("""
                 select o.id, o.parent_id, o.code, o.name, o.unit_type, o.status, o.sort_order,
-                       h.property_code, h.city, h.room_count, h.opening_date
+                       h.property_code, h.city, h.room_count, h.opening_date,
+                       h.breakfast_service_enabled, h.guest_room_floor_count
                 from org_unit o
                 left join hotel_profile h on h.tenant_id = o.tenant_id and h.org_unit_id = o.id
                 where o.tenant_id = :tenantId
@@ -94,7 +95,10 @@ public class OrganizationService {
                 .addValue("propertyCode", trimToNull(request.propertyCode()))
                 .addValue("city", trimToNull(request.city()))
                 .addValue("roomCount", request.roomCount())
-                .addValue("openingDate", request.openingDate());
+                .addValue("openingDate", request.openingDate())
+                .addValue("breakfastServiceEnabled", Boolean.TRUE.equals(request.breakfastServiceEnabled()))
+                .addValue("guestRoomFloorCount", request.guestRoomFloorCount() == null
+                        ? 1 : request.guestRoomFloorCount());
         jdbc.update("""
                 insert into org_unit (id, tenant_id, parent_id, code, name, unit_type, sort_order)
                 values (:id, :tenantId, :parentId, :code, :name, :unitType, :sortOrder)
@@ -114,9 +118,11 @@ public class OrganizationService {
         if ("HOTEL".equals(unitType)) {
             jdbc.update("""
                     insert into hotel_profile
-                        (id, tenant_id, org_unit_id, property_code, city, room_count, opening_date)
+                        (id, tenant_id, org_unit_id, property_code, city, room_count, opening_date,
+                         breakfast_service_enabled, guest_room_floor_count)
                     values
-                        (:hotelId, :tenantId, :id, :propertyCode, :city, :roomCount, :openingDate)
+                        (:hotelId, :tenantId, :id, :propertyCode, :city, :roomCount, :openingDate,
+                         :breakfastServiceEnabled, :guestRoomFloorCount)
                     """, parameters.addValue("hotelId", UUID.randomUUID()));
         }
         Map<String, Object> response = new LinkedHashMap<>();
@@ -142,6 +148,10 @@ public class OrganizationService {
         if (request.roomCount() != null && request.roomCount() < 0) {
             throw new IllegalArgumentException("房间数不能小于0");
         }
+        if (request.guestRoomFloorCount() != null
+                && (request.guestRoomFloorCount() < 1 || request.guestRoomFloorCount() > 100)) {
+            throw new IllegalArgumentException("客房楼层数必须在1到100之间");
+        }
         if ("HOTEL".equals(unitType) && isBlank(request.propertyCode())) {
             throw new IllegalArgumentException("门店必须保留门店编码");
         }
@@ -164,7 +174,10 @@ public class OrganizationService {
                 .addValue("propertyCode", trimToNull(request.propertyCode()))
                 .addValue("city", trimToNull(request.city()))
                 .addValue("roomCount", request.roomCount())
-                .addValue("openingDate", request.openingDate());
+                .addValue("openingDate", request.openingDate())
+                .addValue("breakfastServiceEnabled", Boolean.TRUE.equals(request.breakfastServiceEnabled()))
+                .addValue("guestRoomFloorCount", request.guestRoomFloorCount() == null
+                        ? 1 : request.guestRoomFloorCount());
         jdbc.update("""
                 update org_unit
                 set code = :code, name = :name, sort_order = :sortOrder, status = :status, updated_at = now()
@@ -174,7 +187,10 @@ public class OrganizationService {
             jdbc.update("""
                     update hotel_profile
                     set property_code = :propertyCode, city = :city, room_count = :roomCount,
-                        opening_date = :openingDate, updated_at = now()
+                        opening_date = :openingDate,
+                        breakfast_service_enabled = :breakfastServiceEnabled,
+                        guest_room_floor_count = :guestRoomFloorCount,
+                        updated_at = now()
                     where tenant_id = :tenantId and org_unit_id = :id
                     """, parameters);
         }

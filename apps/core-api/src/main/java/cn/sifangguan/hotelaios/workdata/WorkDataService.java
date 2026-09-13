@@ -1,5 +1,6 @@
 package cn.sifangguan.hotelaios.workdata;
 
+import cn.sifangguan.hotelaios.dailyreports.DailyReportRoutineProjectionService;
 import cn.sifangguan.hotelaios.shared.audit.AuditWriter;
 import cn.sifangguan.hotelaios.shared.context.TenantPrincipal;
 import cn.sifangguan.hotelaios.shared.db.TenantDatabaseContext;
@@ -30,6 +31,7 @@ public class WorkDataService {
     private final AuditWriter auditWriter;
     private final FormPayloadValidator payloadValidator;
     private final ObjectMapper objectMapper;
+    private final DailyReportRoutineProjectionService routineProjectionService;
 
     public WorkDataService(
             NamedParameterJdbcTemplate jdbc,
@@ -37,7 +39,8 @@ public class WorkDataService {
             AccessPolicy accessPolicy,
             AuditWriter auditWriter,
             FormPayloadValidator payloadValidator,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            DailyReportRoutineProjectionService routineProjectionService
     ) {
         this.jdbc = jdbc;
         this.databaseContext = databaseContext;
@@ -45,6 +48,7 @@ public class WorkDataService {
         this.auditWriter = auditWriter;
         this.payloadValidator = payloadValidator;
         this.objectMapper = objectMapper;
+        this.routineProjectionService = routineProjectionService;
     }
 
     @Transactional(readOnly = true)
@@ -191,7 +195,11 @@ public class WorkDataService {
                 """, params));
         accessPolicy.requireOrgScope((UUID) result.get("target_org_unit_id"));
         result.put("attachments", jdbc.queryForList("""
-                select id, object_key, original_name, media_type, size_bytes, sha256, scan_status, created_at
+                select id, object_key, original_name, media_type, size_bytes, sha256, scan_status,
+                       capture_source, checkpoint_code, captured_at_client, received_at,
+                       source_sha256, evidence_metadata,
+                       evidence_metadata ->> 'evidenceInstanceKey' as evidence_instance_key,
+                       created_at
                 from attachment where tenant_id = :tenantId and work_record_id = :recordId
                 order by created_at
                 """, params));
@@ -229,7 +237,10 @@ public class WorkDataService {
         String recordKind = resolveRecordKind(request.recordKind(), workContext.itemType());
         String status = saveAsDraft ? "DRAFT" : "SUBMITTED";
         if ("SUBMITTED".equals(status)) {
+            requireFirstSharedSubmission(principal, workContext.expectationId(), null);
+            validateConditionalFields(workContext.itemCode(), request.payload());
             validateSubmissionPolicy(principal, workContext.itemId(), null,
+                    request.payload(), targetOrgUnitId,
                     request.completionStatement(), request.exceptionStatement(), request.nextAction());
         }
         OffsetDateTime occurredAt = request.occurredAt() == null ? OffsetDateTime.now() : request.occurredAt();
@@ -328,6 +339,7 @@ public class WorkDataService {
             throw new IllegalArgumentException("只有草稿工作记录可以提交");
         }
         validatePayload(principal, record.formVersionId(), readJson(record.payloadJson()));
+        requireFirstSharedSubmission(principal, record.expectationId(), recordId);
         validateSubmissionPolicyForRecord(principal, recordId);
         int changed = jdbc.update("""
                 update work_record
@@ -360,6 +372,7 @@ public class WorkDataService {
         if (principal.actorId().equals(record.submittedByAccountId())) {
             throw new AccessDeniedException("提交人不能复核自己的工作记录");
         }
+        requireConfiguredReviewer(principal, record);
         String outcome = request.outcome().trim().toUpperCase(Locale.ROOT);
         if (!Set.of("APPROVED", "REJECTED").contains(outcome)) {
             throw new IllegalArgumentException("复核结果只能是APPROVED或REJECTED");
@@ -399,6 +412,9 @@ public class WorkDataService {
                 "{\"workRecordId\":\"" + recordId + "\",\"orgUnitId\":\""
                         + record.targetOrgUnitId() + "\",\"positionAssignmentId\":\""
                         + record.assignmentId() + "\"}");
+        if ("APPROVED".equals(outcome)) {
+            routineProjectionService.projectApprovedWorkRecord(recordId);
+        }
         return response("id", recordId, "status", outcome, "rowVersion", request.expectedVersion() + 1);
     }
 
@@ -467,12 +483,13 @@ public class WorkDataService {
                   and a.org_unit_id = :orgUnitId and a.status = 'ACTIVE'
                   and a.valid_from <= :businessDate and (a.valid_to is null or a.valid_to >= :businessDate)
                   and fv.lifecycle_status = 'PUBLISHED'
-                  and (f.position_id is null or f.position_id = a.position_id)
+                  and (f.position_id is null or f.position_id = a.position_id or :linkedExpectation = true)
                 """, base(principal)
                 .addValue("formVersionId", request.formVersionId())
                 .addValue("assignmentId", request.positionAssignmentId())
                 .addValue("employeeId", request.employeeId())
                 .addValue("orgUnitId", request.orgUnitId())
+                .addValue("linkedExpectation", request.workExpectationId() != null)
                 .addValue("businessDate", request.businessDate()), Integer.class);
         if (validAssignment == null || validAssignment != 1) {
             throw new IllegalArgumentException("任职、岗位、组织与已发布表单不匹配");
@@ -481,11 +498,17 @@ public class WorkDataService {
 
     private void validateSubmissionPolicyForRecord(TenantPrincipal principal, UUID recordId) {
         Map<String, Object> record = jdbc.queryForMap("""
-                select work_package_item_id, completion_statement, exception_statement, next_action
-                from work_record
-                where tenant_id = :tenantId and id = :recordId
+                select record.work_package_item_id, record.target_org_unit_id, record.completion_statement,
+                       record.exception_statement, record.next_action, record.payload::text,
+                       item.item_code
+                from work_record record
+                left join work_package_item item
+                  on item.tenant_id = record.tenant_id and item.id = record.work_package_item_id
+                where record.tenant_id = :tenantId and record.id = :recordId
                 """, base(principal).addValue("recordId", recordId));
+        validateConditionalFields((String) record.get("item_code"), readJson((String) record.get("payload")));
         validateSubmissionPolicy(principal, (UUID) record.get("work_package_item_id"), recordId,
+                readJson((String) record.get("payload")), (UUID) record.get("target_org_unit_id"),
                 (String) record.get("completion_statement"), (String) record.get("exception_statement"),
                 (String) record.get("next_action"));
     }
@@ -494,6 +517,8 @@ public class WorkDataService {
             TenantPrincipal principal,
             UUID workPackageItemId,
             UUID workRecordId,
+            JsonNode payload,
+            UUID targetOrgUnitId,
             String completionStatement,
             String exceptionStatement,
             String nextAction
@@ -518,7 +543,7 @@ public class WorkDataService {
                 && (nextAction == null || nextAction.isBlank())) {
             throw new IllegalArgumentException("提交工作记录必须填写下一步行动");
         }
-        int maxAttachments = Math.max(0, Math.min(10, policy.path("maxAttachments").asInt(10)));
+        int maxAttachments = Math.max(0, Math.min(200, policy.path("maxAttachments").asInt(10)));
         int count = 0;
         if (workRecordId != null) {
             Integer stored = jdbc.queryForObject("""
@@ -531,8 +556,141 @@ public class WorkDataService {
         if (count > maxAttachments) {
             throw new IllegalArgumentException("工作记录附件数量超过模板上限" + maxAttachments + "个");
         }
+        for (JsonNode requirement : policy.path("evidenceRequirements")) {
+            JsonNode requiredWhen = requirement.path("requiredWhen");
+            if (requiredWhen.isObject()) {
+                String field = requiredWhen.path("field").asText("");
+                JsonNode expected = requiredWhen.get("equals");
+                JsonNode actual = payload == null ? null : payload.get(field);
+                if (field.isBlank() || expected == null || actual == null || !actual.equals(expected)) {
+                    continue;
+                }
+            }
+            if (workRecordId == null) {
+                throw new IllegalArgumentException("模板要求先保存草稿并上传现场证据后再提交");
+            }
+            String checkpointCode = requirement.path("checkpointCode").asText("").trim();
+            String captureSource = requirement.path("captureSource").asText("").trim();
+            if (requirement.has("requiredInstances")) {
+                validateInstanceEvidence(principal, workRecordId, payload, requirement,
+                        checkpointCode, captureSource);
+                continue;
+            }
+            int minimum = Math.max(1, requirement.path("minimum").asInt(1));
+            if (requirement.has("minimumPerHotelFloor") && targetOrgUnitId != null) {
+                Integer floors = jdbc.queryForObject("""
+                        select coalesce(max(guest_room_floor_count), 1)
+                        from hotel_profile where tenant_id = :tenantId and org_unit_id = :orgUnitId
+                        """, base(principal).addValue("orgUnitId", targetOrgUnitId), Integer.class);
+                minimum = Math.max(minimum,
+                        Math.max(1, floors == null ? 1 : floors) * requirement.path("minimumPerHotelFloor").asInt(1));
+            }
+            List<String> mediaTypes = new java.util.ArrayList<>();
+            requirement.path("mediaTypes").forEach(value -> mediaTypes.add(value.asText()));
+            Integer matching = jdbc.queryForObject("""
+                    select count(*) from attachment
+                    where tenant_id = :tenantId and work_record_id = :recordId
+                      and scan_status <> 'REJECTED'
+                      and (:checkpointCode = '' or checkpoint_code = :checkpointCode)
+                      and (:captureSource = '' or capture_source = :captureSource)
+                      and (cardinality(cast(:mediaTypes as text[])) = 0
+                           or media_type = any(cast(:mediaTypes as text[])))
+                    """, base(principal).addValue("recordId", workRecordId)
+                    .addValue("checkpointCode", checkpointCode)
+                    .addValue("captureSource", captureSource)
+                    .addValue("mediaTypes", "{" + String.join(",", mediaTypes) + "}"), Integer.class);
+            if (matching == null || matching < minimum) {
+                String label = requirement.path("label").asText(checkpointCode.isBlank() ? "现场证据" : checkpointCode);
+                throw new IllegalArgumentException(label + "至少需要" + minimum + "份符合要求的证据");
+            }
+        }
         if (policy.path("attachmentRequired").asBoolean(false) && count == 0) {
             throw new IllegalArgumentException("该岗位工作模板要求至少上传一个附件证据");
+        }
+    }
+
+    private void validateInstanceEvidence(
+            TenantPrincipal principal,
+            UUID workRecordId,
+            JsonNode payload,
+            JsonNode requirement,
+            String checkpointCode,
+            String captureSource
+    ) {
+        int requiredInstances = requirement.path("requiredInstances").asInt(0);
+        String instanceField = requirement.path("instanceField").asText("").trim();
+        String instanceLabel = requirement.path("instanceLabel").asText("房号").trim();
+        String label = requirement.path("label").asText(checkpointCode.isBlank() ? "逐项证据" : checkpointCode);
+        if (requiredInstances < 1 || requiredInstances > 100 || instanceField.isBlank()) {
+            throw new IllegalArgumentException("逐项证据模板配置不正确");
+        }
+        JsonNode values = payload == null ? null : payload.get(instanceField);
+        if (values == null || !values.isArray() || values.size() != requiredInstances) {
+            throw new IllegalArgumentException(label + "必须填写" + requiredInstances + "个" + instanceLabel);
+        }
+        List<String> instanceKeys = new ArrayList<>(requiredInstances);
+        Set<String> distinct = new LinkedHashSet<>();
+        for (JsonNode value : values) {
+            String key = normalizeEvidenceInstanceKey(value == null || !value.isTextual() ? null : value.asText());
+            if (key == null) {
+                throw new IllegalArgumentException(label + instanceLabel + "不能为空或格式不正确");
+            }
+            if (!distinct.add(key)) {
+                throw new IllegalArgumentException(label + instanceLabel + "不能重复：" + key);
+            }
+            instanceKeys.add(key);
+        }
+        int minimumPerInstance = Math.max(1, requirement.path("minimumPerInstance").asInt(1));
+        List<String> mediaTypes = new ArrayList<>();
+        requirement.path("mediaTypes").forEach(value -> mediaTypes.add(value.asText()));
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                select evidence_metadata ->> 'evidenceInstanceKey' as instance_key,
+                       count(*) as evidence_count
+                from attachment
+                where tenant_id = :tenantId and work_record_id = :recordId
+                  and scan_status <> 'REJECTED'
+                  and (:checkpointCode = '' or checkpoint_code = :checkpointCode)
+                  and (:captureSource = '' or capture_source = :captureSource)
+                  and (cardinality(cast(:mediaTypes as text[])) = 0
+                       or media_type = any(cast(:mediaTypes as text[])))
+                group by evidence_metadata ->> 'evidenceInstanceKey'
+                """, base(principal).addValue("recordId", workRecordId)
+                .addValue("checkpointCode", checkpointCode)
+                .addValue("captureSource", captureSource)
+                .addValue("mediaTypes", "{" + String.join(",", mediaTypes) + "}"));
+        Map<String, Integer> evidenceCounts = new HashMap<>();
+        for (Map<String, Object> row : rows) {
+            Object rawKey = row.get("instance_key");
+            if (rawKey != null) {
+                evidenceCounts.put(String.valueOf(rawKey), ((Number) row.get("evidence_count")).intValue());
+            }
+        }
+        for (String instanceKey : instanceKeys) {
+            if (evidenceCounts.getOrDefault(instanceKey, 0) < minimumPerInstance) {
+                throw new IllegalArgumentException(label + instanceLabel + instanceKey
+                        + "至少需要" + minimumPerInstance + "张对应照片");
+            }
+        }
+    }
+
+    private String normalizeEvidenceInstanceKey(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.trim().toUpperCase(Locale.ROOT);
+        return normalized.matches("[\\p{L}\\p{N}][\\p{L}\\p{N}_-]{0,31}") ? normalized : null;
+    }
+
+    private void validateConditionalFields(String itemCode, JsonNode payload) {
+        if (itemCode == null || !Set.of("GM_PUBLIC_AREA_INSPECTION", "GM_PUBLIC_AREA_INSPECTION_AM",
+                "GM_PUBLIC_AREA_INSPECTION_PM", "GM_ROOM_INSPECTION")
+                .contains(itemCode) || !payload.path("issueFound").asBoolean(false)) {
+            return;
+        }
+        if (payload.path("issueSummary").asText("").isBlank()
+                || payload.path("correctiveOwner").asText("").isBlank()
+                || payload.path("correctiveDeadline").asText("").isBlank()) {
+            throw new IllegalArgumentException("巡检发现问题时必须填写问题说明、整改责任人和整改时限");
         }
     }
 
@@ -544,7 +702,7 @@ public class WorkDataService {
         if (request.workExpectationId() != null) {
             WorkContext context = jdbc.queryForObject("""
                     select v.id as version_id, i.id as item_id, x.id as expectation_id,
-                           i.item_type, i.form_version_id, x.position_assignment_id,
+                           i.item_type, i.item_code, i.form_version_id, x.position_assignment_id,
                            x.target_org_unit_id, x.business_date, x.status
                     from work_expectation x
                     join work_package_item i on i.tenant_id = x.tenant_id and i.id = x.work_package_item_id
@@ -556,16 +714,17 @@ public class WorkDataService {
                             rs.getObject("item_id", UUID.class),
                             rs.getObject("expectation_id", UUID.class),
                             rs.getString("item_type"),
+                            rs.getString("item_code"),
                             rs.getObject("form_version_id", UUID.class),
                             rs.getObject("position_assignment_id", UUID.class),
                             rs.getObject("target_org_unit_id", UUID.class),
                             rs.getObject("business_date", java.time.LocalDate.class),
                             rs.getString("status")));
-            if (!request.positionAssignmentId().equals(context.assignmentId())
+            if (!canExecuteExpectation(principal, context.expectationId(), request.positionAssignmentId())
                     || !targetOrgUnitId.equals(context.targetOrgUnitId())
                     || !request.businessDate().equals(context.businessDate())
                     || !request.formVersionId().equals(context.formVersionId())
-                    || !Set.of("PLANNED", "AVAILABLE", "IN_PROGRESS", "FAILED").contains(context.expectationStatus())) {
+                    || !Set.of("PLANNED", "AVAILABLE", "IN_PROGRESS", "FAILED", "MISSED").contains(context.expectationStatus())) {
                 throw new IllegalArgumentException("工作期望与任职、门店、周期或表单不匹配");
             }
             if (request.workPackageVersionId() != null && !request.workPackageVersionId().equals(context.versionId())) {
@@ -583,7 +742,7 @@ public class WorkDataService {
             return WorkContext.legacy();
         }
         return jdbc.queryForObject("""
-                select v.id as version_id, i.id as item_id, i.item_type, i.form_version_id
+                select v.id as version_id, i.id as item_id, i.item_type, i.item_code, i.form_version_id
                 from work_package_version v
                 join work_package_item i on i.tenant_id = v.tenant_id and i.work_package_version_id = v.id
                 where v.tenant_id = :tenantId and v.id = :versionId and i.id = :itemId
@@ -595,8 +754,62 @@ public class WorkDataService {
                 (rs, rowNum) -> new WorkContext(
                         rs.getObject("version_id", UUID.class),
                         rs.getObject("item_id", UUID.class), null,
-                        rs.getString("item_type"), rs.getObject("form_version_id", UUID.class),
+                        rs.getString("item_type"), rs.getString("item_code"),
+                        rs.getObject("form_version_id", UUID.class),
                         null, null, null, null));
+    }
+
+    private boolean canExecuteExpectation(
+            TenantPrincipal principal,
+            UUID expectationId,
+            UUID requestedAssignmentId
+    ) {
+        Integer allowed = jdbc.queryForObject("""
+                select count(*)
+                from work_expectation x
+                join work_package_item i on i.tenant_id = x.tenant_id and i.id = x.work_package_item_id
+                join employee_position_assignment candidate
+                  on candidate.tenant_id = x.tenant_id and candidate.id = :assignmentId
+                 and candidate.org_unit_id = x.target_org_unit_id and candidate.status = 'ACTIVE'
+                 and candidate.valid_from <= x.business_date
+                 and (candidate.valid_to is null or candidate.valid_to >= x.business_date)
+                join position_definition position
+                  on position.tenant_id = candidate.tenant_id and position.id = candidate.position_id
+                left join work_expectation_delegation delegation
+                  on delegation.tenant_id = x.tenant_id
+                 and delegation.work_expectation_id = x.id and delegation.status = 'ACTIVE'
+                where x.tenant_id = :tenantId and x.id = :expectationId
+                  and (
+                    (delegation.id is not null and delegation.delegate_assignment_id = candidate.id)
+                    or (delegation.id is null and (
+                      x.position_assignment_id = candidate.id
+                      or jsonb_exists(coalesce(i.execution_policy -> 'allowedPositionCodes', '[]'::jsonb), position.code)
+                    ))
+                  )
+                """, base(principal).addValue("expectationId", expectationId)
+                .addValue("assignmentId", requestedAssignmentId), Integer.class);
+        return allowed != null && allowed == 1;
+    }
+
+    private void requireFirstSharedSubmission(
+            TenantPrincipal principal,
+            UUID expectationId,
+            UUID currentRecordId
+    ) {
+        if (expectationId == null) return;
+        String excludeCurrentRecord = currentRecordId == null ? "" : " and id <> :recordId";
+        MapSqlParameterSource params = base(principal).addValue("expectationId", expectationId);
+        if (currentRecordId != null) {
+            params.addValue("recordId", currentRecordId);
+        }
+        Integer existing = jdbc.queryForObject("""
+                select count(*) from work_record
+                where tenant_id = :tenantId and work_expectation_id = :expectationId
+                  and status in ('SUBMITTED', 'APPROVED')
+                """ + excludeCurrentRecord, params, Integer.class);
+        if (existing != null && existing > 0) {
+            throw new IllegalArgumentException("该共享事项已由其他人员提交，请刷新待办");
+        }
     }
 
     private int nextAttempt(
@@ -670,7 +883,7 @@ public class WorkDataService {
                 update work_expectation
                 set status = :status, row_version = row_version + 1
                 where tenant_id = :tenantId and id = :expectationId
-                  and status in ('PLANNED', 'AVAILABLE', 'IN_PROGRESS', 'FAILED')
+                  and status in ('PLANNED', 'AVAILABLE', 'IN_PROGRESS', 'FAILED', 'MISSED')
                 """, base(principal)
                 .addValue("expectationId", expectationId)
                 .addValue("status", expectationStatus));
@@ -726,7 +939,8 @@ public class WorkDataService {
     private RecordAccess recordAccess(TenantPrincipal principal, UUID recordId) {
         return jdbc.queryForObject("""
                 select status, target_org_unit_id, position_assignment_id, form_version_id,
-                       work_expectation_id, submitted_by_account_id, occurred_at, payload::text
+                       work_package_item_id, work_expectation_id, submitted_by_account_id,
+                       business_date, occurred_at, payload::text
                 from work_record where tenant_id = :tenantId and id = :recordId
                 """, base(principal).addValue("recordId", recordId),
                 (rs, rowNum) -> new RecordAccess(
@@ -734,10 +948,51 @@ public class WorkDataService {
                         rs.getObject("target_org_unit_id", UUID.class),
                         rs.getObject("position_assignment_id", UUID.class),
                         rs.getObject("form_version_id", UUID.class),
+                        rs.getObject("work_package_item_id", UUID.class),
                         rs.getObject("work_expectation_id", UUID.class),
                         rs.getObject("submitted_by_account_id", UUID.class),
+                        rs.getObject("business_date", java.time.LocalDate.class),
                         rs.getObject("occurred_at", OffsetDateTime.class),
                         rs.getString("payload")));
+    }
+
+    private void requireConfiguredReviewer(TenantPrincipal principal, RecordAccess record) {
+        if (record.workPackageItemId() == null) {
+            return;
+        }
+        Integer directManagerRuleCount = jdbc.queryForObject("""
+                select count(*)
+                from work_package_item_responsibility
+                where tenant_id = :tenantId
+                  and work_package_item_id = :itemId
+                  and participant_type in ('REVIEWER', 'ACCEPTOR')
+                  and resolver_type = 'DIRECT_MANAGER_ASSIGNMENT'
+                """, base(principal).addValue("itemId", record.workPackageItemId()), Integer.class);
+        if (directManagerRuleCount == null || directManagerRuleCount == 0) {
+            return;
+        }
+
+        UUID directManagerAssignmentId = jdbc.query("""
+                select manager.id
+                from employee_position_assignment executor
+                join employee_position_assignment manager
+                  on manager.tenant_id = executor.tenant_id
+                 and manager.id = executor.manager_assignment_id
+                where executor.tenant_id = :tenantId
+                  and executor.id = :assignmentId
+                  and manager.status = 'ACTIVE'
+                  and manager.valid_from <= :businessDate
+                  and (manager.valid_to is null or manager.valid_to >= :businessDate)
+                """, base(principal)
+                .addValue("assignmentId", record.assignmentId())
+                .addValue("businessDate", record.businessDate()),
+                rs -> rs.next() ? rs.getObject("id", UUID.class) : null);
+        if (directManagerAssignmentId == null) {
+            throw new AccessDeniedException("当前事项未配置有效的直属主管任职，暂不能复核");
+        }
+        if (!principal.assignmentIds().contains(directManagerAssignmentId)) {
+            throw new AccessDeniedException("仅该事项执行人的直属主管可以复核");
+        }
     }
 
     private TenantPrincipal prepare() {
@@ -821,6 +1076,7 @@ public class WorkDataService {
             UUID itemId,
             UUID expectationId,
             String itemType,
+            String itemCode,
             UUID formVersionId,
             UUID assignmentId,
             UUID targetOrgUnitId,
@@ -828,7 +1084,7 @@ public class WorkDataService {
             String expectationStatus
     ) {
         private static WorkContext legacy() {
-            return new WorkContext(null, null, null, null, null, null, null, null, null);
+            return new WorkContext(null, null, null, null, null, null, null, null, null, null);
         }
     }
 
@@ -837,8 +1093,10 @@ public class WorkDataService {
             UUID targetOrgUnitId,
             UUID assignmentId,
             UUID formVersionId,
+            UUID workPackageItemId,
             UUID expectationId,
             UUID submittedByAccountId,
+            java.time.LocalDate businessDate,
             OffsetDateTime occurredAt,
             String payloadJson
     ) {

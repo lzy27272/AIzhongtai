@@ -66,7 +66,7 @@ public class WeComDeliveryWorker {
                         sha256(properties.corpId() + ":" + endpoint).getBytes(StandardCharsets.US_ASCII))) {
                     throw new IllegalStateException("WeCom delivery endpoint binding changed");
                 }
-                URI deepLink = oauthStartLink(delivery.taskId());
+                URI deepLink = oauthStartLink(delivery.sourceType(), delivery.sourceId());
                 String externalMessageId = delivery.chatId() != null
                         ? apiClient.sendApplicationChatTaskLink(delivery.chatId(), delivery.title(), delivery.content(), deepLink)
                         : apiClient.sendApplicationTaskLink(delivery.userId(), delivery.title(), delivery.content(), deepLink);
@@ -84,8 +84,11 @@ public class WeComDeliveryWorker {
                     select n.id, n.recipient_account_id, ub.wecom_user_id,
                            chat.chat_id
                     from notification n
-                    join management_task task
+                    left join management_task task
                       on n.source_type = 'TASK' and task.tenant_id = n.tenant_id and task.id = n.source_id
+                    left join work_expectation expectation
+                      on n.source_type = 'WORK_EXPECTATION'
+                     and expectation.tenant_id = n.tenant_id and expectation.id = n.source_id
                     left join wecom_user_binding ub
                       on ub.tenant_id = n.tenant_id and ub.corp_id = :corpId
                      and ub.account_id = n.recipient_account_id and ub.status = 'ACTIVE'
@@ -104,6 +107,8 @@ public class WeComDeliveryWorker {
                         limit 1
                     ) chat on true
                     where n.tenant_id = :tenantId
+                      and ((n.source_type = 'TASK' and task.id is not null)
+                           or (n.source_type = 'WORK_EXPECTATION' and expectation.id is not null))
                       and (ub.id is not null or chat.chat_id is not null)
                       and not exists (
                           select 1 from notification_delivery d
@@ -133,12 +138,15 @@ public class WeComDeliveryWorker {
             prepare();
             List<Delivery> rows = jdbc.query("""
                     select d.id, d.attempt_count, d.recipient_endpoint_hash,
-                           n.title, n.content, n.source_id as task_id,
+                           n.title, n.content, n.source_type, n.source_id,
                            ub.wecom_user_id, chat.chat_id
                     from notification_delivery d
                     join notification n on n.tenant_id = d.tenant_id and n.id = d.notification_id
-                    join management_task task
+                    left join management_task task
                       on n.source_type = 'TASK' and task.tenant_id = n.tenant_id and task.id = n.source_id
+                    left join work_expectation expectation
+                      on n.source_type = 'WORK_EXPECTATION'
+                     and expectation.tenant_id = n.tenant_id and expectation.id = n.source_id
                     left join wecom_user_binding ub
                       on ub.tenant_id = n.tenant_id and ub.corp_id = :corpId
                      and ub.account_id = n.recipient_account_id and ub.status = 'ACTIVE'
@@ -156,6 +164,8 @@ public class WeComDeliveryWorker {
                         order by cb.created_at, cb.id limit 1
                     ) chat on true
                     where d.tenant_id = :tenantId and d.channel = 'WECHAT'
+                      and ((n.source_type = 'TASK' and task.id is not null)
+                           or (n.source_type = 'WORK_EXPECTATION' and expectation.id is not null))
                       and d.status in ('PENDING', 'FAILED')
                       and d.available_at <= now() and (d.next_retry_at is null or d.next_retry_at <= now())
                       and (d.locked_until is null or d.locked_until < now())
@@ -167,7 +177,8 @@ public class WeComDeliveryWorker {
                     (rs, rowNum) -> new Delivery(
                             rs.getObject("id", UUID.class), rs.getInt("attempt_count"),
                             rs.getString("title"), rs.getString("content"),
-                            rs.getObject("task_id", UUID.class), rs.getString("recipient_endpoint_hash"),
+                            rs.getString("source_type"), rs.getObject("source_id", UUID.class),
+                            rs.getString("recipient_endpoint_hash"),
                             rs.getString("wecom_user_id"),
                             rs.getString("chat_id")));
             for (Delivery row : rows) {
@@ -212,11 +223,14 @@ public class WeComDeliveryWorker {
         });
     }
 
-    private URI oauthStartLink(UUID taskId) {
+    private URI oauthStartLink(String sourceType, UUID sourceId) {
         URI callback = properties.oauthCallbackUrl();
+        String returnTo = "WORK_EXPECTATION".equals(sourceType)
+                ? "#/my-work?expectationId=" + sourceId
+                : "#/tasks?view=mine&taskId=" + sourceId;
         URI start = UriComponentsBuilder.newInstance().scheme(callback.getScheme()).host(callback.getHost())
                 .port(callback.getPort()).path("/api/v1/integrations/wecom/oauth/start")
-                .queryParam("returnTo", "#/tasks?view=mine&taskId=" + taskId)
+                .queryParam("returnTo", returnTo)
                 .build().encode().toUri();
         return start;
     }
@@ -234,6 +248,7 @@ public class WeComDeliveryWorker {
     }
 
     private record PendingNotification(UUID notificationId, UUID accountId, String userId, String chatId) { }
-    private record Delivery(UUID id, int attemptCount, String title, String content, UUID taskId,
+    private record Delivery(UUID id, int attemptCount, String title, String content,
+                            String sourceType, UUID sourceId,
                             String endpointHash, String userId, String chatId) { }
 }

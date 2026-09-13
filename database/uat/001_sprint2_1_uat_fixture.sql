@@ -356,7 +356,7 @@ VALUES
  '2a200000-0000-0000-0000-000000000003', '2a300000-0000-0000-0000-000000000004',
  '19200000-0000-0000-0000-000000000003', NULL,
  '12000000-0000-0000-0000-000000000006', current_date - 1, 'UAT-HK-MISSED-' || (current_date - 1),
- now() - interval '1 day', now() - interval '5 minutes', 'AVAILABLE')
+ now() - interval '1 day', now() - interval '45 minutes', 'AVAILABLE')
 ON CONFLICT (tenant_id, id) DO NOTHING;
 
 -- A submitted housekeeping inspection is the stable subject for scenario A image upload and hygiene evaluation.

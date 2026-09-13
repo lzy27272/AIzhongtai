@@ -4,6 +4,7 @@ import cn.sifangguan.hotelaios.shared.audit.AuditWriter;
 import cn.sifangguan.hotelaios.shared.context.TenantPrincipal;
 import cn.sifangguan.hotelaios.shared.db.TenantDatabaseContext;
 import cn.sifangguan.hotelaios.shared.security.AccessPolicy;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
@@ -15,6 +16,10 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import javax.imageio.ImageIO;
+import java.awt.Color;
+import java.awt.Font;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -24,6 +29,9 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.HexFormat;
 import java.util.Comparator;
 import java.util.List;
@@ -70,6 +78,18 @@ public class AttachmentService {
 
     @Transactional
     public Map<String, Object> upload(UUID workRecordId, MultipartFile file) {
+        return upload(workRecordId, file, "FILE_PICKER", null, null, null);
+    }
+
+    @Transactional
+    public Map<String, Object> upload(
+            UUID workRecordId,
+            MultipartFile file,
+            String requestedCaptureSource,
+            String requestedCheckpointCode,
+            String requestedEvidenceInstanceKey,
+            OffsetDateTime capturedAtClient
+    ) {
         TenantPrincipal principal = prepare();
         accessPolicy.requirePermission("work-record.submit");
         RecordTarget record = recordTarget(principal, workRecordId);
@@ -78,15 +98,33 @@ public class AttachmentService {
             throw new IllegalArgumentException("已完成复核的工作记录不能追加附件");
         }
         UUID attachmentId = UUID.randomUUID();
+        OffsetDateTime receivedAt = OffsetDateTime.now(ZoneOffset.UTC);
+        String captureSource = normalizeCaptureSource(requestedCaptureSource);
+        String checkpointCode = normalizeCheckpointCode(requestedCheckpointCode);
+        String evidenceInstanceKey = normalizeEvidenceInstanceKey(requestedEvidenceInstanceKey);
+        if (evidenceInstanceKey != null && checkpointCode == null) {
+            throw new IllegalArgumentException("逐房证据必须同时指定检查点");
+        }
         String originalName = normalizeOriginalName(file.getOriginalFilename());
         ValidatedUpload upload = validatedFile(file, originalName);
-        byte[] content = upload.content();
+        if ("CAMERA".equals(captureSource) && !ALLOWED_IMAGE_TYPES.contains(upload.mediaType())) {
+            throw new IllegalArgumentException("现场拍照证据必须是JPG或PNG图片");
+        }
+        byte[] content = "CAMERA".equals(captureSource)
+                ? addTrustedWatermark(upload.content(), upload.mediaType(), record, receivedAt, attachmentId)
+                : upload.content();
         String safeName = safeName(originalName);
         String mediaType = upload.mediaType();
         String objectKey = principal.tenantId() + "/work-records/" + workRecordId + "/"
                 + attachmentId + "-" + safeName;
         Path path = resolveObjectKey(objectKey);
         String sha256 = sha256(content);
+        var evidenceMetadata = JsonNodeFactory.instance.objectNode()
+                .put("trustedTimestampSource", "SERVER_RECEIVED_AT")
+                .put("watermarked", "CAMERA".equals(captureSource));
+        if (evidenceInstanceKey != null) {
+            evidenceMetadata.put("evidenceInstanceKey", evidenceInstanceKey);
+        }
         String scanStatus;
         try {
             Files.createDirectories(path.getParent());
@@ -95,10 +133,12 @@ public class AttachmentService {
             jdbc.update("""
                     insert into attachment
                         (id, tenant_id, work_record_id, object_key, original_name, media_type,
-                         size_bytes, sha256, scan_status)
+                         size_bytes, sha256, scan_status, capture_source, checkpoint_code,
+                         captured_at_client, received_at, source_sha256, evidence_metadata)
                     values
                         (:id, :tenantId, :workRecordId, :objectKey, :originalName, :mediaType,
-                         :sizeBytes, :sha256, :scanStatus)
+                         :sizeBytes, :sha256, :scanStatus, :captureSource, :checkpointCode,
+                         :capturedAtClient, :receivedAt, :sourceSha256, cast(:evidenceMetadata as jsonb))
                     """, base(principal)
                     .addValue("id", attachmentId)
                     .addValue("workRecordId", workRecordId)
@@ -107,7 +147,13 @@ public class AttachmentService {
                     .addValue("mediaType", mediaType)
                     .addValue("sizeBytes", content.length)
                     .addValue("sha256", sha256)
-                    .addValue("scanStatus", scanStatus));
+                    .addValue("scanStatus", scanStatus)
+                    .addValue("captureSource", captureSource)
+                    .addValue("checkpointCode", checkpointCode)
+                    .addValue("capturedAtClient", capturedAtClient)
+                    .addValue("receivedAt", receivedAt)
+                    .addValue("sourceSha256", upload.sourceSha256())
+                    .addValue("evidenceMetadata", evidenceMetadata.toString()));
         } catch (RuntimeException exception) {
             deleteQuietly(path);
             throw exception;
@@ -119,7 +165,8 @@ public class AttachmentService {
                 "{\"workRecordId\":\"" + workRecordId + "\",\"sha256\":\"" + sha256
                         + "\",\"scanStatus\":\"" + scanStatus + "\"}");
         return attachmentResponse(attachmentId, workRecordId, objectKey, originalName, mediaType,
-                content.length, sha256, scanStatus);
+                content.length, sha256, scanStatus, captureSource, checkpointCode,
+                evidenceInstanceKey, capturedAtClient, receivedAt, upload.sourceSha256());
     }
 
     public StoredObject storeObject(String objectKey, MultipartFile file) {
@@ -282,7 +329,10 @@ public class AttachmentService {
         accessPolicy.requireOrgScope(record.targetOrgUnitId());
         return jdbc.queryForList("""
                 select id, work_record_id, object_key, original_name, media_type, size_bytes,
-                       sha256, scan_status, created_at
+                       sha256, scan_status, capture_source, checkpoint_code, captured_at_client,
+                       received_at, source_sha256, evidence_metadata,
+                       evidence_metadata ->> 'evidenceInstanceKey' as evidence_instance_key,
+                       created_at
                 from attachment
                 where tenant_id = :tenantId and work_record_id = :workRecordId
                 order by created_at, id
@@ -356,7 +406,7 @@ public class AttachmentService {
             String extension = extension(originalName);
             String mediaType = resolvedMediaType(file.getContentType(), extension, content);
             if (!ALLOWED_IMAGE_TYPES.contains(mediaType)) {
-                return new ValidatedUpload(content, mediaType);
+                return new ValidatedUpload(content, mediaType, sha256(content));
             }
             BufferedImage image = ImageIO.read(new ByteArrayInputStream(content));
             if (image == null) {
@@ -375,7 +425,7 @@ public class AttachmentService {
             if (sanitizedContent.length > maxSizeBytes) {
                 throw new IllegalArgumentException("重新编码后的图片超过允许大小");
             }
-            return new ValidatedUpload(sanitizedContent, mediaType);
+            return new ValidatedUpload(sanitizedContent, mediaType, sha256(content));
         } catch (IllegalArgumentException exception) {
             throw exception;
         } catch (Exception exception) {
@@ -441,12 +491,19 @@ public class AttachmentService {
 
     private RecordTarget recordTarget(TenantPrincipal principal, UUID workRecordId) {
         return jdbc.queryForObject("""
-                select status, target_org_unit_id, position_assignment_id
-                from work_record where tenant_id = :tenantId and id = :workRecordId
+                select record.status, record.target_org_unit_id, record.position_assignment_id,
+                       org.name as org_name, coalesce(item.name, '工作记录') as item_name
+                from work_record record
+                join org_unit org
+                  on org.tenant_id = record.tenant_id and org.id = record.target_org_unit_id
+                left join work_package_item item
+                  on item.tenant_id = record.tenant_id and item.id = record.work_package_item_id
+                where record.tenant_id = :tenantId and record.id = :workRecordId
                 """, base(principal).addValue("workRecordId", workRecordId),
                 (rs, rowNum) -> new RecordTarget(rs.getString("status"),
                         rs.getObject("target_org_unit_id", UUID.class),
-                        rs.getObject("position_assignment_id", UUID.class)));
+                        rs.getObject("position_assignment_id", UUID.class),
+                        rs.getString("org_name"), rs.getString("item_name")));
     }
 
     private void requireOwnerOrDelegatedSubmit(TenantPrincipal principal, RecordTarget record) {
@@ -513,19 +570,115 @@ public class AttachmentService {
 
     private static Map<String, Object> attachmentResponse(
             UUID id, UUID recordId, String objectKey, String originalName, String mediaType,
-            long sizeBytes, String sha256, String scanStatus
+            long sizeBytes, String sha256, String scanStatus, String captureSource,
+            String checkpointCode, String evidenceInstanceKey,
+            OffsetDateTime capturedAtClient, OffsetDateTime receivedAt,
+            String sourceSha256
     ) {
-        return Map.of(
-                "id", id,
-                "workRecordId", recordId,
-                "objectKey", objectKey,
-                "originalName", originalName,
-                "mediaType", mediaType,
-                "sizeBytes", sizeBytes,
-                "sha256", sha256,
-                "scanStatus", scanStatus,
-                "contentUrl", "/api/v1/work-data/attachments/" + id + "/content"
-        );
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("id", id);
+        result.put("workRecordId", recordId);
+        result.put("objectKey", objectKey);
+        result.put("originalName", originalName);
+        result.put("mediaType", mediaType);
+        result.put("sizeBytes", sizeBytes);
+        result.put("sha256", sha256);
+        result.put("sourceSha256", sourceSha256);
+        result.put("scanStatus", scanStatus);
+        result.put("captureSource", captureSource);
+        result.put("checkpointCode", checkpointCode);
+        result.put("evidenceInstanceKey", evidenceInstanceKey);
+        result.put("capturedAtClient", capturedAtClient);
+        result.put("receivedAt", receivedAt);
+        result.put("contentUrl", "/api/v1/work-data/attachments/" + id + "/content");
+        return result;
+    }
+
+    private byte[] addTrustedWatermark(
+            byte[] content,
+            String mediaType,
+            RecordTarget record,
+            OffsetDateTime receivedAt,
+            UUID attachmentId
+    ) {
+        try {
+            BufferedImage original = ImageIO.read(new ByteArrayInputStream(content));
+            if (original == null) {
+                throw new IllegalArgumentException("现场拍照文件不是有效图片");
+            }
+            if (original.getWidth() < 320 || original.getHeight() < 240) {
+                throw new IllegalArgumentException("现场照片分辨率不能低于320×240，无法形成清晰证据水印");
+            }
+            boolean png = MediaType.IMAGE_PNG_VALUE.equals(mediaType);
+            int imageType = png ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
+            BufferedImage watermarked = new BufferedImage(original.getWidth(), original.getHeight(), imageType);
+            Graphics2D graphics = watermarked.createGraphics();
+            try {
+                graphics.drawImage(original, 0, 0, null);
+                graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+                int fontSize = Math.max(12, Math.min(28, original.getWidth() / 36));
+                graphics.setFont(new Font(Font.SANS_SERIF, Font.BOLD, fontSize));
+                String lineOne = "SFG | " + record.orgName() + " | SERVER "
+                        + receivedAt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss XXX"));
+                String lineTwo = record.itemName() + " | EVIDENCE "
+                        + attachmentId.toString().substring(0, 8).toUpperCase(Locale.ROOT);
+                int padding = Math.max(8, fontSize / 2);
+                int lineHeight = graphics.getFontMetrics().getHeight();
+                int boxHeight = lineHeight * 2 + padding * 2;
+                int y = Math.max(0, original.getHeight() - boxHeight);
+                graphics.setColor(new Color(0, 0, 0, 175));
+                graphics.fillRect(0, y, original.getWidth(), boxHeight);
+                graphics.setColor(Color.WHITE);
+                graphics.drawString(lineOne, padding, y + padding + graphics.getFontMetrics().getAscent());
+                graphics.drawString(lineTwo, padding, y + padding + lineHeight + graphics.getFontMetrics().getAscent());
+            } finally {
+                graphics.dispose();
+            }
+            ByteArrayOutputStream output = new ByteArrayOutputStream(content.length);
+            if (!ImageIO.write(watermarked, png ? "png" : "jpeg", output)) {
+                throw new IllegalArgumentException("现场照片水印写入失败");
+            }
+            byte[] result = output.toByteArray();
+            if (result.length > maxSizeBytes) {
+                throw new IllegalArgumentException("加盖可信时间水印后的图片超过允许大小");
+            }
+            return result;
+        } catch (IllegalArgumentException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new IllegalArgumentException("现场照片水印写入失败", exception);
+        }
+    }
+
+    private String normalizeCaptureSource(String value) {
+        String normalized = value == null || value.isBlank()
+                ? "FILE_PICKER" : value.trim().toUpperCase(Locale.ROOT);
+        if (!Set.of("FILE_PICKER", "CAMERA").contains(normalized)) {
+            throw new IllegalArgumentException("不支持的证据采集方式");
+        }
+        return normalized;
+    }
+
+    private String normalizeCheckpointCode(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.trim().toLowerCase(Locale.ROOT);
+        if (!normalized.matches("[a-z0-9][a-z0-9_-]{0,79}")) {
+            throw new IllegalArgumentException("检查点编码格式不正确");
+        }
+        return normalized;
+    }
+
+    private String normalizeEvidenceInstanceKey(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.trim().toUpperCase(Locale.ROOT);
+        if (!normalized.matches("[\\p{L}\\p{N}][\\p{L}\\p{N}_-]{0,31}")) {
+            throw new IllegalArgumentException("房号格式不正确，仅支持字母、数字、下划线或短横线，最长32位");
+        }
+        return normalized;
     }
 
     private static void deleteQuietly(Path path) {
@@ -536,7 +689,13 @@ public class AttachmentService {
         }
     }
 
-    private record RecordTarget(String status, UUID targetOrgUnitId, UUID assignmentId) {
+    private record RecordTarget(
+            String status,
+            UUID targetOrgUnitId,
+            UUID assignmentId,
+            String orgName,
+            String itemName
+    ) {
     }
 
     public record Download(Resource resource, String originalName, String mediaType, long sizeBytes) {
@@ -552,7 +711,7 @@ public class AttachmentService {
     ) {
     }
 
-    private record ValidatedUpload(byte[] content, String mediaType) {
+    private record ValidatedUpload(byte[] content, String mediaType, String sourceSha256) {
     }
 
     private static final class GeneratedObjectCleanupException extends RuntimeException {

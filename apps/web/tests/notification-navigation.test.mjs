@@ -43,6 +43,14 @@ test('日报、任务和KPI通知携带详情参数', () => {
   })
 })
 
+test('岗位事项提醒直达指定填报项', () => {
+  assert.deepEqual(resolveNotificationNavigation({
+    type: 'WORK_EXPECTATION_REMINDER', sourceType: 'WORK_EXPECTATION', sourceId: 'expectation-1',
+  }), {
+    view: 'my-work', params: { expectationId: 'expectation-1' }, actionLabel: '去完成',
+  })
+})
+
 test('岗位治理通知直达岗位配置，员工通知只回到自己的工作台', () => {
   assert.deepEqual(resolveNotificationNavigation({
     type: 'POSITION_ACCESS_AUTO_SUSPENDED', sourceType: 'POSITION', sourceId: 'position-1',

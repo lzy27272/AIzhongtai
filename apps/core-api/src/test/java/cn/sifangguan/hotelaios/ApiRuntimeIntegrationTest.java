@@ -61,7 +61,7 @@ class ApiRuntimeIntegrationTest {
                         .header("X-Role-Code", "CEO"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.hotelCount").value(2))
-                .andExpect(jsonPath("$.employeeCount").value(7))
+                .andExpect(jsonPath("$.employeeCount").value(8))
                 .andExpect(jsonPath("$.publishedStandardCount").value(3))
                 .andExpect(jsonPath("$.todayWorkSubmissionCount").value(3))
                 .andExpect(jsonPath("$.latestMetrics.length()").value(5));

@@ -49,4 +49,35 @@ class FormPayloadValidatorTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("summary");
     }
+
+    @Test
+    void roomNumberArraysRequireExactUniqueValues() throws Exception {
+        JsonNode schema = objectMapper.readTree("""
+                {
+                  "type":"object",
+                  "required":["roomNumbers"],
+                  "properties":{
+                    "roomNumbers":{
+                      "type":"array",
+                      "minItems":2,
+                      "maxItems":2,
+                      "uniqueItems":true,
+                      "items":{"type":"string","minLength":1,"maxLength":32}
+                    }
+                  }
+                }
+                """);
+
+        assertThatCode(() -> validator.requireValid(schema,
+                objectMapper.readTree("{\"roomNumbers\":[\"1208\",\"1210\"]}")))
+                .doesNotThrowAnyException();
+        assertThatThrownBy(() -> validator.requireValid(schema,
+                objectMapper.readTree("{\"roomNumbers\":[\"1208\",\"1208\"]}")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("不能包含重复项目");
+        assertThatThrownBy(() -> validator.requireValid(schema,
+                objectMapper.readTree("{\"roomNumbers\":[\"1208\"]}")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("项目数少于 2");
+    }
 }

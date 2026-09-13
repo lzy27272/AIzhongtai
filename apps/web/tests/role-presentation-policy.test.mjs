@@ -31,6 +31,7 @@ const expectedCodes = {
 
 function migrationRoleModuleMatrix() {
   const source = readFileSync(new URL('../../../database/migrations/V37__separate_navigation_modules_from_action_permissions.sql', import.meta.url), 'utf8')
+  const storeManagerClosedLoop = readFileSync(new URL('../../../database/migrations/V46__store_manager_daily_work_closed_loop.sql', import.meta.url), 'utf8')
   const result = new Map()
   const values = (fragment) => [...fragment.matchAll(/'([^']+)'/g)].map((match) => match[1])
   const sharedPattern = /FROM unnest\(ARRAY\[(.*?)\]\) AS roles\(role_code\)\s+CROSS JOIN unnest\(ARRAY\[(.*?)\]\) AS modules\(module_id\)/gs
@@ -39,6 +40,12 @@ function migrationRoleModuleMatrix() {
   }
   const singlePattern = /SELECT '([^']+)', module_id\s+FROM unnest\(ARRAY\[(.*?)\]\) AS modules\(module_id\)/gs
   for (const match of source.matchAll(singlePattern)) result.set(match[1], values(match[2]))
+  if (storeManagerClosedLoop.includes("position.code = 'GENERAL_MANAGER'")
+      && storeManagerClosedLoop.includes("module_permission.code = 'ui.module.my-work'")) {
+    const generalManagerModules = [...(result.get('GENERAL_MANAGER') ?? [])]
+    generalManagerModules.splice(generalManagerModules.indexOf('hotel-dashboard') + 1, 0, 'my-work')
+    result.set('GENERAL_MANAGER', [...new Set(generalManagerModules)])
+  }
   return result
 }
 
@@ -94,7 +101,7 @@ test('mobile five-tab labels and targets match the frozen role matrix', () => {
     FRONT_DESK: [['工作台', 'workbench'], ['待办', 'tasks'], ['日报', 'daily-reports-my'], ['消息', 'notifications'], ['我的', 'all-functions']],
     FRONT_OFFICE_SUPERVISOR: [['工作台', 'workbench'], ['待办', 'tasks'], ['团队', 'team-work'], ['消息', 'notifications'], ['我的', 'all-functions']],
     ASSISTANT_GENERAL_MANAGER: [['工作台', 'workbench'], ['待办', 'tasks'], ['运营', 'daily-operations'], ['消息', 'notifications'], ['我的', 'all-functions']],
-    GENERAL_MANAGER: [['门店', 'hotel-dashboard'], ['待办', 'tasks'], ['运营', 'daily-operations'], ['消息', 'notifications'], ['我的', 'all-functions']],
+    GENERAL_MANAGER: [['门店', 'hotel-dashboard'], ['工作', 'my-work'], ['运营', 'daily-operations'], ['消息', 'notifications'], ['我的', 'all-functions']],
     OTA_OPERATION_MANAGER: [['区域', 'operations-dashboard'], ['待办', 'tasks'], ['运营', 'daily-operations'], ['消息', 'notifications'], ['我的', 'all-functions']],
     HR_KPI_ADMIN: [['人事', 'organization'], ['待办', 'tasks'], ['KPI', 'kpi-center'], ['消息', 'notifications'], ['我的', 'all-functions']],
     GROUP_VICE_PRESIDENT: [['集团', 'workbench'], ['待办', 'tasks'], ['经营', 'daily-operations'], ['消息', 'notifications'], ['我的', 'all-functions']],
@@ -121,7 +128,7 @@ test('desktop module allowlists match every frozen role template', () => {
     FRONT_OFFICE_SUPERVISOR: ['workbench', 'my-work', 'team-work', 'tasks', 'daily-reports-my', 'daily-operations', 'evaluations', 'kpi-center', 'notifications', 'all-functions'],
     HOUSEKEEPING_SUPERVISOR: ['workbench', 'my-work', 'team-work', 'tasks', 'daily-reports-my', 'daily-operations', 'evaluations', 'kpi-center', 'notifications', 'all-functions'],
     ASSISTANT_GENERAL_MANAGER: ['workbench', 'hotel-dashboard', 'team-work', 'tasks', 'daily-reports-my', 'daily-report-templates', 'daily-operations', 'evaluations', 'kpi-center', 'notifications', 'all-functions'],
-    GENERAL_MANAGER: ['workbench', 'hotel-dashboard', 'team-work', 'tasks', 'daily-reports-my', 'daily-operations', 'kpi-center', 'rules', 'evaluations', 'notifications', 'all-functions'],
+    GENERAL_MANAGER: ['workbench', 'hotel-dashboard', 'my-work', 'team-work', 'tasks', 'daily-reports-my', 'daily-operations', 'kpi-center', 'rules', 'evaluations', 'notifications', 'all-functions'],
     OTA_OPERATION_MANAGER: ['workbench', 'operations-dashboard', 'tasks', 'daily-reports-my', 'daily-operations', 'kpi-center', 'rules', 'notifications', 'all-functions'],
     HR_KPI_ADMIN: ['workbench', 'tasks', 'organization', 'wecom-bindings', 'wecom-onboarding', 'kpi-center', 'notifications', 'all-functions'],
     GROUP_VICE_PRESIDENT: ['workbench', 'operations-dashboard', 'tasks', 'daily-reports-my', 'daily-operations', 'kpi-center', 'work-packages', 'rules', 'notifications', 'all-functions'],

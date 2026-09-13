@@ -158,9 +158,10 @@ function normalizeExpectation(item: JsonObject): WorkExpectation {
     id: text(item, ['id']),
     title: text(item, ['title', 'expectationTitle', 'workItemName', 'itemName', 'item_name'], '岗位工作'),
     packageName: text(item, ['packageName', 'workPackageName', 'work_package_name'], '工作包'),
-    itemName: text(item, ['itemName', 'workItemName', 'work_item_name'], '工作项'),
+    itemName: text(item, ['itemName', 'workItemName', 'item_name', 'work_item_name'], '工作项'),
     status: text(item, ['status'], 'PENDING'),
     businessDate: text(item, ['businessDate', 'business_date'], ''),
+    availableAt: text(item, ['availableAt', 'available_at'], '') || undefined,
     dueAt: text(item, ['dueAt', 'due_at'], '') || undefined,
     targetOrgName: text(item, ['targetOrgName', 'targetOrgUnitName', 'orgUnitName', 'target_org_name', 'target_org_unit_name'], '当前组织'),
     assigneeName: text(item, ['assigneeName', 'employeeName', 'employee_name', 'assignee_name'], '当前负责人'),
@@ -189,13 +190,62 @@ function normalizeExpectation(item: JsonObject): WorkExpectation {
         nextActionRequired: raw.nextActionRequired === true,
         attachmentRequired: raw.attachmentRequired === true,
         maxAttachments: Number(raw.maxAttachments ?? 10),
+        attachmentCountUnlimited: raw.attachmentCountUnlimited === true,
         maxFileSizeBytes: Number(raw.maxFileSizeBytes ?? 20 * 1024 * 1024),
         allowedExtensions: asList<string>(raw.allowedExtensions).length
           ? asList<string>(raw.allowedExtensions)
           : ['jpg', 'jpeg', 'png', 'pdf', 'docx', 'xlsx'],
+        evidenceRequirements: asList<JsonObject>(raw.evidenceRequirements).map((requirement) => ({
+          checkpointCode: text(requirement, ['checkpointCode', 'checkpoint_code']),
+          label: text(requirement, ['label'], '现场证据'),
+          captureSource: text(requirement, ['captureSource', 'capture_source'], '') as 'CAMERA' | 'FILE_PICKER' || undefined,
+          mediaTypes: asList<string>(requirement.mediaTypes),
+          minimum: value(requirement, 'minimum') === undefined ? undefined : number(requirement, ['minimum']),
+          recommendedMaximum: value(requirement, 'recommendedMaximum') === undefined ? undefined : number(requirement, ['recommendedMaximum']),
+          minimumPerHotelFloor: value(requirement, 'minimumPerHotelFloor') === undefined ? undefined : number(requirement, ['minimumPerHotelFloor']),
+          recommendedMaximumPerHotelFloor: value(requirement, 'recommendedMaximumPerHotelFloor') === undefined ? undefined : number(requirement, ['recommendedMaximumPerHotelFloor']),
+          requiredInstances: value(requirement, 'requiredInstances') === undefined ? undefined : number(requirement, ['requiredInstances']),
+          instanceField: text(requirement, ['instanceField'], '') || undefined,
+          instanceLabel: text(requirement, ['instanceLabel'], '') || undefined,
+          minimumPerInstance: value(requirement, 'minimumPerInstance') === undefined ? undefined : number(requirement, ['minimumPerInstance']),
+          requiredWhen: (() => {
+            const condition = object(requirement.requiredWhen)
+            const field = text(condition, ['field'], '')
+            return field ? { field, equals: condition.equals } : undefined
+          })(),
+        })),
       }
     })(),
+    reminderPolicy: object(jsonColumn(value(item, 'reminderPolicy', 'reminder_policy'))),
+    reportPolicy: object(jsonColumn(value(item, 'reportPolicy', 'report_policy'))),
+    applicabilityPolicy: object(jsonColumn(value(item, 'applicabilityPolicy', 'applicability_policy'))),
+    executionPolicy: object(jsonColumn(value(item, 'executionPolicy', 'execution_policy'))) as WorkExpectation['executionPolicy'],
+    guestRoomFloorCount: value(item, 'guestRoomFloorCount', 'guest_room_floor_count') === undefined ? undefined : number(item, ['guestRoomFloorCount', 'guest_room_floor_count']),
+    delegateAssignmentId: text(item, ['delegateAssignmentId', 'delegate_assignment_id'], '') || undefined,
+    delegatedEmployeeName: text(item, ['delegatedEmployeeName', 'delegated_employee_name'], '') || undefined,
+    ownerResting: value(item, 'ownerResting', 'owner_resting') === true,
   }
+}
+
+export async function loadDelegationCandidates(identity: ApiIdentity, expectationId: string) {
+  const payload = await apiRequest<unknown>(`/work-expectations/${expectationId}/delegation-candidates`, identity)
+  return asList<JsonObject>(payload).map((item) => ({
+    assignmentId: text(item, ['assignmentId', 'assignment_id']),
+    employeeName: text(item, ['employeeName', 'employee_name']),
+    positionName: text(item, ['positionName', 'position_name']),
+  }))
+}
+
+export async function delegateExpectation(identity: ApiIdentity, expectationId: string, input: {
+  delegateAssignmentId: string; ownerResting: boolean; reason?: string; expectedVersion: number
+}) {
+  return apiRequest(`/work-expectations/${expectationId}/delegate`, identity, {
+    method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(input),
+  })
+}
+
+export async function revokeExpectationDelegation(identity: ApiIdentity, expectationId: string, expectedVersion: number) {
+  return apiRequest(`/work-expectations/${expectationId}/delegation?expectedVersion=${expectedVersion}`, identity, { method: 'DELETE' })
 }
 
 export async function loadExpectation(identity: ApiIdentity, id: string, fallback: WorkExpectation) {
@@ -228,6 +278,12 @@ function normalizeAttachment(item: JsonObject): WorkRecordAttachment {
     sizeBytes: number(item, ['sizeBytes', 'size_bytes'], 0),
     sha256: text(item, ['sha256'], '') || undefined,
     scanStatus: text(item, ['scanStatus', 'scan_status'], 'PENDING'),
+    captureSource: text(item, ['captureSource', 'capture_source'], '') || undefined,
+    checkpointCode: text(item, ['checkpointCode', 'checkpoint_code'], '') || undefined,
+    evidenceInstanceKey: text(item, ['evidenceInstanceKey', 'evidence_instance_key'], '') || undefined,
+    capturedAtClient: text(item, ['capturedAtClient', 'captured_at_client'], '') || undefined,
+    receivedAt: text(item, ['receivedAt', 'received_at'], '') || undefined,
+    sourceSha256: text(item, ['sourceSha256', 'source_sha256'], '') || undefined,
     createdAt: text(item, ['createdAt', 'created_at'], '') || undefined,
   }
 }
@@ -356,10 +412,21 @@ export async function reviewWorkRecord(identity: ApiIdentity, recordId: string, 
   })
 }
 
-export async function uploadWorkRecordAttachment(identity: ApiIdentity, recordId: string, file: File) {
+export async function uploadWorkRecordAttachment(
+  identity: ApiIdentity,
+  recordId: string,
+  file: File,
+  metadata: { captureSource?: 'CAMERA' | 'FILE_PICKER'; checkpointCode?: string; evidenceInstanceKey?: string; capturedAtClient?: string } = {},
+) {
   const form = new FormData()
   form.append('file', file, file.name)
-  return apiRequest(`/work-data/records/${recordId}/attachments/upload`, identity, {
+  const query = new URLSearchParams()
+  if (metadata.captureSource) query.set('captureSource', metadata.captureSource)
+  if (metadata.checkpointCode) query.set('checkpointCode', metadata.checkpointCode)
+  if (metadata.evidenceInstanceKey) query.set('evidenceInstanceKey', metadata.evidenceInstanceKey)
+  if (metadata.capturedAtClient) query.set('capturedAtClient', metadata.capturedAtClient)
+  const suffix = query.size ? `?${query.toString()}` : ''
+  return apiRequest(`/work-data/records/${recordId}/attachments/upload${suffix}`, identity, {
     method: 'POST',
     headers: { 'Idempotency-Key': crypto.randomUUID() },
     body: form,

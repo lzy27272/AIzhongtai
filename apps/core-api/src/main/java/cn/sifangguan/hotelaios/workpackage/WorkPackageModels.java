@@ -79,6 +79,10 @@ public final class WorkPackageModels {
             String targetGranularity,
             String reviewMode,
             JsonNode submissionPolicy,
+            JsonNode reminderPolicy,
+            JsonNode reportPolicy,
+            JsonNode applicabilityPolicy,
+            JsonNode executionPolicy,
             List<@Valid StandardLink> standards,
             @NotEmpty List<@Valid Responsibility> responsibilities
     ) {
@@ -134,6 +138,14 @@ public final class WorkPackageModels {
 
     public record ExpectationAction(
             @NotBlank String reason,
+            @PositiveOrZero long expectedVersion
+    ) {
+    }
+
+    public record DelegateExpectation(
+            @NotNull UUID delegateAssignmentId,
+            Boolean ownerResting,
+            String reason,
             @PositiveOrZero long expectedVersion
     ) {
     }

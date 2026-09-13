@@ -5,10 +5,12 @@ import { bootstrapAssignmentId, bootstrapAssignments, canLoadSecondaryResources 
 import {
   addWorkRecordSupplement,
   createWorkRecordDraft,
+  delegateExpectation,
   createRuleWithVersion,
   createTaskEvaluation,
   deleteTaskEvidence,
   loadEvaluations,
+  loadDelegationCandidates,
   loadEvaluation,
   loadExpectation,
   loadIdentity,
@@ -22,6 +24,7 @@ import {
   loadWorkPackages,
   loadWorkRecord,
   publishRuleVersion,
+  revokeExpectationDelegation,
   saveRuleVersion,
   submitWorkRecordDraft,
   updateWorkRecordDraft,
@@ -35,6 +38,7 @@ import { EnterpriseTemplateCenter, TaskCreateDialog } from './Pilot6Pages'
 import { product } from './product'
 import type {
   ApiSource,
+  DelegationCandidate,
   IdentitySnapshot,
   ManagementRule,
   ManagementTask,
@@ -45,6 +49,7 @@ import type {
   RuleVersionDraft,
   RoleContext,
   StandardEvaluation,
+  SubmissionPolicy,
   WorkExpectation,
   WorkRecordDetail,
 } from './domain'
@@ -273,33 +278,92 @@ function WorkTable({ items, own = false, onFill }: { items: WorkExpectation[]; o
     <div className="table-row table-head"><span>工作项</span><span>目标组织</span><span>负责人</span><span>截止时间</span><span>评价</span><span>状态</span>{own && <span>操作</span>}</div>
     {items.map((item) => <div className="table-row" key={item.id}>
       <span><strong>{item.title}</strong><small>{item.packageName} · {item.itemName}</small></span>
-      <span>{item.targetOrgName}</span><span>{item.assigneeName}</span><span>{formatDate(item.dueAt)}</span>
+      <span>{item.targetOrgName}</span><span>{item.delegatedEmployeeName ? `${item.delegatedEmployeeName}（已转交）` : item.assigneeName}</span><span>{formatDate(item.dueAt)}</span>
       <span>{item.evaluationOutcome ? <Status value={item.evaluationOutcome} /> : '—'}</span><span><Status value={item.status} /></span>
-      {own && <span><button className="link-button" disabled={['MISSED', 'WAIVED', 'CANCELLED'].includes(item.status)} onClick={() => onFill?.(item)}>{['SUBMITTED', 'SATISFIED'].includes(item.status) ? '查看提交' : item.status === 'FAILED' ? '查看并重提' : '填报'}</button></span>}
+      {own && <span><button className="link-button" disabled={['WAIVED', 'CANCELLED'].includes(item.status)} onClick={() => onFill?.(item)}>{['SUBMITTED', 'SATISFIED'].includes(item.status) ? '查看提交' : item.status === 'FAILED' ? '查看并重提' : item.status === 'MISSED' ? '逾期补交' : '填报'}</button></span>}
     </div>)}
   </div>
 }
+
+type PendingWorkEvidence = {
+  file: File
+  captureSource: 'CAMERA' | 'FILE_PICKER'
+  checkpointCode?: string
+  evidenceInstanceKey?: string
+  capturedAtClient?: string
+}
+
+type WorkRecordFieldValue = string | number | boolean | string[]
 
 function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpectation; identity: RoleContext; onClose: () => void; onSaved: () => void }) {
   const [completion, setCompletion] = useState('')
   const [exception, setException] = useState('')
   const [nextAction, setNextAction] = useState('')
-  const [payload, setPayload] = useState<Record<string, string | number | boolean>>({})
-  const [attachments, setAttachments] = useState<File[]>([])
+  const [payload, setPayload] = useState<Record<string, WorkRecordFieldValue>>({})
+  const [attachments, setAttachments] = useState<PendingWorkEvidence[]>([])
   const [existing, setExisting] = useState<WorkRecordDetail>()
   const [loadingRecord, setLoadingRecord] = useState(Boolean(item.recordId))
   const [supplement, setSupplement] = useState('')
   const [saving, setSaving] = useState<'draft' | 'submit' | 'supplement'>()
+  const [delegating, setDelegating] = useState(false)
+  const [candidates, setCandidates] = useState<DelegationCandidate[]>([])
+  const [delegateAssignmentId, setDelegateAssignmentId] = useState('')
+  const [ownerResting, setOwnerResting] = useState(false)
+  const [delegationReason, setDelegationReason] = useState('')
   const [message, setMessage] = useState<string>()
-  const employeeId = item.employeeId ?? identity.employeeId
+  const employeeId = identity.employeeId ?? item.employeeId
+  const executionAssignmentId = identity.businessActorAssignmentId ?? item.assignmentId
   const assignmentOrgUnitId = identity.assignmentOrgUnitId
-  const canSubmit = item.orgUnitId && assignmentOrgUnitId && employeeId && item.assignmentId && item.formVersionId
+  const executionAllowed = !item.delegateAssignmentId || item.delegateAssignmentId === executionAssignmentId
+  const canSubmit = item.orgUnitId && assignmentOrgUnitId && employeeId && executionAssignmentId && item.formVersionId && executionAllowed
   const properties = item.formSchema?.properties ?? {}
   const required = item.formSchema?.required ?? []
-  const policy = item.submissionPolicy ?? { completionStatementRequired: true, exceptionStatementRequired: false, nextActionRequired: false, attachmentRequired: false, maxAttachments: 10, maxFileSizeBytes: 20 * 1024 * 1024, allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf', 'docx', 'xlsx'] }
+  const policy = item.submissionPolicy ?? { completionStatementRequired: true, exceptionStatementRequired: false, nextActionRequired: false, attachmentRequired: false, maxAttachments: 10, maxFileSizeBytes: 20 * 1024 * 1024, allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf', 'docx', 'xlsx'], evidenceRequirements: [] }
   const viewOnly = Boolean(existing && ['SUBMITTED', 'APPROVED'].includes(existing.status) && item.status !== 'FAILED')
   const fieldLabels: Record<string, string> = { checkins: '今日入住数', complaints: '客诉数量', vipReception: 'VIP接待情况', roomsChecked: '检查房间数', issues: '发现问题数', attendance: '出勤人数', employeeStatus: '员工状态', handover: '交接事项', operationsReviewed: '已查看经营数据', otaChecked: '已完成OTA巡查', employeeTalks: '员工沟通人数', summary: '完成情况' }
-  const requiredReady = required.every((key) => payload[key] !== undefined && payload[key] !== '')
+  const requiredReady = required.every((key) => {
+    const value = payload[key]
+    return Array.isArray(value)
+      ? value.length > 0 && value.every((entry) => entry.trim().length > 0)
+      : value !== undefined && value !== ''
+  })
+  const isOwner = item.assignmentId === identity.businessActorAssignmentId
+  const requirementMinimum = (requirement: SubmissionPolicy['evidenceRequirements'][number]) => {
+    if (requirement.requiredWhen && payload[requirement.requiredWhen.field] !== requirement.requiredWhen.equals) return 0
+    const perFloor = requirement.minimumPerHotelFloor ?? 0
+    return Math.max(requirement.minimum ?? 0, perFloor * Math.max(1, item.guestRoomFloorCount ?? 1))
+  }
+  const activeRequirements = policy.evidenceRequirements.filter((requirement) =>
+    (requirement.requiredInstances ?? 0) > 0 || requirementMinimum(requirement) > 0)
+  const hasInstanceRequirements = activeRequirements.some((requirement) => (requirement.requiredInstances ?? 0) > 0)
+  const normalizedInstanceKey = (value: string) => value.trim().toUpperCase()
+  const instanceValues = (requirement: SubmissionPolicy['evidenceRequirements'][number]) => {
+    const count = requirement.requiredInstances ?? 0
+    const source = requirement.instanceField && Array.isArray(payload[requirement.instanceField])
+      ? payload[requirement.instanceField] as string[]
+      : []
+    return Array.from({ length: count }, (_, index) => source[index] ?? '')
+  }
+  const updateInstanceValue = (requirement: SubmissionPolicy['evidenceRequirements'][number], index: number, value: string) => {
+    if (!requirement.instanceField) return
+    setPayload((current) => {
+      const count = requirement.requiredInstances ?? 0
+      const currentValue = current[requirement.instanceField!]
+      const values = Array.from({ length: count }, (_, currentIndex) =>
+        Array.isArray(currentValue) ? currentValue[currentIndex] ?? '' : '')
+      values[index] = value
+      return { ...current, [requirement.instanceField!]: values }
+    })
+  }
+  const appendAttachments = (entries: PendingWorkEvidence[]) => {
+    const storedCount = existing?.status === 'DRAFT' ? existing.attachments.length : 0
+    const available = Math.max(0, policy.maxAttachments - storedCount - attachments.length)
+    if (entries.length > available) {
+      setMessage(`整单安全上限为 ${policy.maxAttachments} 个附件，本次仅保留前 ${available} 个。`)
+    }
+    if (!available) return
+    setAttachments((current) => [...current, ...entries.slice(0, available)])
+  }
   useEffect(() => {
     if (!item.recordId) return
     setLoadingRecord(true)
@@ -309,10 +373,16 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
         setCompletion(resource.data.completionStatement ?? '')
         setException(resource.data.exceptionStatement ?? '')
         setNextAction(resource.data.nextAction ?? '')
-        setPayload(Object.fromEntries(Object.entries(resource.data.payload).filter((entry): entry is [string, string | number | boolean] => ['string', 'number', 'boolean'].includes(typeof entry[1]))))
+        setPayload(Object.fromEntries(Object.entries(resource.data.payload).filter((entry): entry is [string, WorkRecordFieldValue] =>
+          ['string', 'number', 'boolean'].includes(typeof entry[1])
+          || (Array.isArray(entry[1]) && entry[1].every((value) => typeof value === 'string')))))
       }
     }).catch((error) => setMessage(error instanceof Error ? error.message : '工作记录加载失败')).finally(() => setLoadingRecord(false))
   }, [identity.key, item.recordId])
+  useEffect(() => {
+    if (!isOwner || !item.executionPolicy?.delegationAllowed) return
+    void loadDelegationCandidates(identity, item.id).then(setCandidates).catch(() => setCandidates([]))
+  }, [identity.key, isOwner, item.id, item.executionPolicy?.delegationAllowed])
   const recordPayload = () => Object.keys(properties).length ? payload : { summary: completion, exception: exception || null }
   const validate = (forSubmission: boolean) => {
     if (!canSubmit) throw new Error('接口结果缺少组织、员工、任职或表单版本，无法安全提交。')
@@ -321,10 +391,45 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
     if (forSubmission && policy.exceptionStatementRequired && !exception.trim()) throw new Error('请填写异常与协同事项。')
     if (forSubmission && policy.nextActionRequired && !nextAction.trim()) throw new Error('请填写下一步行动。')
     const totalAttachments = (existing?.status === 'DRAFT' ? existing.attachments.length : 0) + attachments.length
-    if (forSubmission && policy.attachmentRequired && totalAttachments === 0) throw new Error('该岗位工作要求必须上传附件证据。')
     if (totalAttachments > policy.maxAttachments) throw new Error(`最多上传 ${policy.maxAttachments} 个附件。`)
-    const oversized = attachments.find((file) => file.size > policy.maxFileSizeBytes)
-    if (oversized) throw new Error(`${oversized.name} 超过单文件大小上限。`)
+    const oversized = attachments.find((entry) => entry.file.size > policy.maxFileSizeBytes)
+    if (oversized) throw new Error(`${oversized.file.name} 超过单文件大小上限。`)
+    if (forSubmission) for (const requirement of activeRequirements) {
+      if ((requirement.requiredInstances ?? 0) > 0 && requirement.instanceField) {
+        const values = instanceValues(requirement)
+        const normalizedValues = values.map(normalizedInstanceKey)
+        if (normalizedValues.some((value) => !value)) {
+          throw new Error(`${requirement.label}需填写 ${requirement.requiredInstances} 个${requirement.instanceLabel ?? '编号'}。`)
+        }
+        if (new Set(normalizedValues).size !== normalizedValues.length) {
+          throw new Error(`${requirement.label}中的${requirement.instanceLabel ?? '编号'}不能重复。`)
+        }
+        for (const value of normalizedValues) {
+          const stored = existing?.status === 'DRAFT'
+            ? existing.attachments.filter((entry) => entry.checkpointCode === requirement.checkpointCode
+              && (!requirement.captureSource || entry.captureSource === requirement.captureSource)
+              && normalizedInstanceKey(entry.evidenceInstanceKey ?? '') === value).length
+            : 0
+          const pending = attachments.filter((entry) => entry.checkpointCode === requirement.checkpointCode
+            && (!requirement.captureSource || entry.captureSource === requirement.captureSource)
+            && normalizedInstanceKey(entry.evidenceInstanceKey ?? '') === value).length
+          const minimumPerInstance = requirement.minimumPerInstance ?? 1
+          if (stored + pending < minimumPerInstance) {
+            throw new Error(`${requirement.label}·${value}至少需要 ${minimumPerInstance} 张现场照片。`)
+          }
+        }
+        continue
+      }
+      const stored = existing?.status === 'DRAFT'
+        ? existing.attachments.filter((entry) => entry.checkpointCode === requirement.checkpointCode
+          && (!requirement.captureSource || entry.captureSource === requirement.captureSource)).length
+        : 0
+      const pending = attachments.filter((entry) => entry.checkpointCode === requirement.checkpointCode
+        && (!requirement.captureSource || entry.captureSource === requirement.captureSource)).length
+      const minimum = requirementMinimum(requirement)
+      if (stored + pending < minimum) throw new Error(`${requirement.label}至少需要 ${minimum} 张现场照片。`)
+    }
+    if (forSubmission && policy.attachmentRequired && totalAttachments === 0) throw new Error('该岗位工作要求必须上传附件证据。')
   }
   const persist = async (submitAfterUpload: boolean) => {
     try { validate(submitAfterUpload) } catch (reason) { setMessage(reason instanceof Error ? reason.message : '提交校验失败'); return }
@@ -334,7 +439,7 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
       const created = existing?.status === 'DRAFT'
         ? await updateWorkRecordDraft(identity, existing.id, { ...draftInput, expectedVersion: existing.rowVersion })
         : await createWorkRecordDraft(identity, {
-          orgUnitId: assignmentOrgUnitId, employeeId, positionAssignmentId: item.assignmentId,
+          orgUnitId: assignmentOrgUnitId, employeeId, positionAssignmentId: executionAssignmentId,
           formVersionId: item.formVersionId, businessDate: item.businessDate,
           workPackageVersionId: item.workPackageVersionId, workPackageItemId: item.workPackageItemId,
           workExpectationId: item.id, targetOrgUnitId: item.orgUnitId,
@@ -343,7 +448,12 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
         })
       const recordId = existing?.status === 'DRAFT' ? existing.id : String(created.id ?? created.recordId ?? '')
       if (!recordId) throw new Error('服务端未返回工作记录编号。')
-      for (const file of attachments) await uploadWorkRecordAttachment(identity, recordId, file)
+      for (const entry of attachments) await uploadWorkRecordAttachment(identity, recordId, entry.file, {
+        captureSource: entry.captureSource,
+        checkpointCode: entry.checkpointCode,
+        evidenceInstanceKey: entry.evidenceInstanceKey,
+        capturedAtClient: entry.capturedAtClient,
+      })
       if (submitAfterUpload) await submitWorkRecordDraft(identity, recordId, Number(created.rowVersion ?? created.row_version ?? 0))
       await Promise.resolve(onSaved()); onClose()
     } catch (error) { setMessage(error instanceof Error ? error.message : '工作记录保存失败') }
@@ -366,15 +476,55 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
       window.open(URL.createObjectURL(blob), '_blank', 'noopener,noreferrer')
     } catch (error) { setMessage(error instanceof Error ? error.message : '附件打开失败') }
   }
+  const saveDelegation = async () => {
+    if (!delegateAssignmentId) { setMessage('请选择同店受托员工。'); return }
+    setDelegating(true); setMessage(undefined)
+    try {
+      await delegateExpectation(identity, item.id, { delegateAssignmentId, ownerResting, reason: delegationReason || undefined, expectedVersion: item.rowVersion ?? 0 })
+      onSaved(); onClose()
+    } catch (error) { setMessage(error instanceof Error ? error.message : '转交失败') }
+    finally { setDelegating(false) }
+  }
+  const revokeDelegation = async () => {
+    setDelegating(true); setMessage(undefined)
+    try { await revokeExpectationDelegation(identity, item.id, item.rowVersion ?? 0); onSaved(); onClose() }
+    catch (error) { setMessage(error instanceof Error ? error.message : '撤销转交失败') }
+    finally { setDelegating(false) }
+  }
   return <div className="modal-backdrop" role="presentation"><section className="modal work-record-modal" role="dialog" aria-modal="true">
     <header><div><span className="panel-kicker">WORK RECORD · REAL API</span><h2>{item.title}</h2></div><button className="close" onClick={onClose}>×</button></header>
-    <div className="form-body"><div className="form-context"><strong>{item.formName ?? '岗位工作记录'}</strong><small>{item.formCode ?? '结构化表单'} · 最多 {policy.maxAttachments} 个附件 · 单文件 ≤ {Math.round(policy.maxFileSizeBytes / 1024 / 1024)}MB</small></div>
+    <div className="form-body"><div className="form-context"><strong>{item.formName ?? '岗位工作记录'}</strong><small>{item.formCode ?? '结构化表单'} · {policy.attachmentCountUnlimited ? `每个房号照片数量不限，整单安全上限 ${policy.maxAttachments} 个附件` : `最多 ${policy.maxAttachments} 个附件`} · 单文件 ≤ {Math.round(policy.maxFileSizeBytes / 1024 / 1024)}MB</small></div>
+      {item.delegateAssignmentId && <div className="inline-warning">本事项已转交给 {item.delegatedEmployeeName ?? '指定员工'}{item.ownerResting ? '，店长今日休息' : ''}。</div>}
+      {isOwner && item.executionPolicy?.delegationAllowed && !viewOnly && <section className="action-box"><label>转交本项工作<select value={delegateAssignmentId} onChange={(event) => setDelegateAssignmentId(event.target.value)}><option value="">请选择同店员工</option>{candidates.map((candidate) => <option value={candidate.assignmentId} key={candidate.assignmentId}>{candidate.employeeName} · {candidate.positionName}</option>)}</select></label><label className="checkbox-line"><input type="checkbox" checked={ownerResting} onChange={(event) => setOwnerResting(event.target.checked)} />店长今日休息</label><label>转交说明<input value={delegationReason} onChange={(event) => setDelegationReason(event.target.value)} placeholder="选填" /></label><div className="button-row"><button className="secondary" disabled={delegating || !delegateAssignmentId} onClick={() => void saveDelegation()}>{delegating ? '处理中…' : '确认转交'}</button>{item.delegateAssignmentId && <button className="secondary" disabled={delegating} onClick={() => void revokeDelegation()}>撤销转交</button>}</div></section>}
       {loadingRecord && <div className="state-card"><div className="spinner" /><strong>正在读取已提交记录</strong></div>}
-      {existing && <section className="detail-section"><h3>最近一次提交 · {label(existing.status)}</h3><dl><div><dt>完成情况</dt><dd>{existing.completionStatement ?? String(existing.payload.summary ?? '—')}</dd></div><div><dt>异常事项</dt><dd>{existing.exceptionStatement ?? String(existing.payload.exception ?? '无')}</dd></div><div><dt>下一步行动</dt><dd>{existing.nextAction ?? '—'}</dd></div><div><dt>提交时间</dt><dd>{formatDate(existing.submittedAt)}</dd></div></dl>{existing.reviewReason && <div className="inline-warning">复核意见：{existing.reviewReason}</div>}<div className="attachment-list">{existing.attachments.map((attachment) => <button className="secondary" key={attachment.id} onClick={() => void preview(attachment.id)}>{attachment.originalName} · {Math.ceil(attachment.sizeBytes / 1024)}KB</button>)}</div>{existing.supplements.map((entry) => <p className="muted" key={entry.id}>补充：{entry.content} · {entry.submittedByName}</p>)}</section>}
+      {existing && <section className="detail-section"><h3>最近一次提交 · {label(existing.status)}</h3><dl><div><dt>完成情况</dt><dd>{existing.completionStatement ?? String(existing.payload.summary ?? '—')}</dd></div><div><dt>异常事项</dt><dd>{existing.exceptionStatement ?? String(existing.payload.exception ?? '无')}</dd></div><div><dt>下一步行动</dt><dd>{existing.nextAction ?? '—'}</dd></div><div><dt>提交时间</dt><dd>{formatDate(existing.submittedAt)}</dd></div></dl>{existing.reviewReason && <div className="inline-warning">复核意见：{existing.reviewReason}</div>}<div className="attachment-list">{existing.attachments.map((attachment) => <button className="secondary" key={attachment.id} onClick={() => void preview(attachment.id)}>{attachment.evidenceInstanceKey ? `房号 ${attachment.evidenceInstanceKey} · ` : ''}{attachment.originalName} · {Math.ceil(attachment.sizeBytes / 1024)}KB</button>)}</div>{existing.supplements.map((entry) => <p className="muted" key={entry.id}>补充：{entry.content} · {entry.submittedByName}</p>)}</section>}
       {viewOnly && existing?.status === 'SUBMITTED' && <section className="action-box"><label>补充说明<textarea rows={3} value={supplement} onChange={(event) => setSupplement(event.target.value)} placeholder="待主管复核前可追加说明，原提交内容不会被覆盖" /></label><button className="secondary" disabled={saving === 'supplement' || !supplement.trim()} onClick={() => void addSupplement()}>{saving === 'supplement' ? '补充中…' : '追加说明'}</button></section>}
-      {!viewOnly && !loadingRecord && <>{item.status === 'FAILED' && <div className="inline-warning">上一版未通过，本次提交会生成新的尝试记录，不覆盖历史证据。</div>}{Object.keys(properties).length > 0 && <div className="dynamic-form">{Object.entries(properties).map(([key, definition]) => <label key={key}>{fieldLabels[key] ?? definition.title ?? key}{required.includes(key) ? ' *' : ''}{definition.type === 'boolean' ? <select value={String(payload[key] ?? '')} onChange={(event) => setPayload({ ...payload, [key]: event.target.value === 'true' })}><option value="">请选择</option><option value="true">是</option><option value="false">否</option></select> : ['integer', 'number'].includes(definition.type ?? '') ? <input type="number" min={definition.minimum} max={definition.maximum} value={String(payload[key] ?? '')} onChange={(event) => setPayload({ ...payload, [key]: event.target.value === '' ? '' : Number(event.target.value) })} /> : <textarea rows={3} value={String(payload[key] ?? '')} onChange={(event) => setPayload({ ...payload, [key]: event.target.value })} />}{definition.description && <small>{definition.description}</small>}</label>)}</div>}
+      {!viewOnly && !loadingRecord && <>{item.status === 'FAILED' && <div className="inline-warning">上一版未通过，本次提交会生成新的尝试记录，不覆盖历史证据。</div>}{Object.values(properties).some((definition) => definition.type !== 'array') && <div className="dynamic-form">{Object.entries(properties).filter(([, definition]) => definition.type !== 'array').map(([key, definition]) => <label key={key}>{fieldLabels[key] ?? definition.title ?? key}{required.includes(key) ? ' *' : ''}{definition.type === 'boolean' ? <select value={String(payload[key] ?? '')} onChange={(event) => setPayload((current) => ({ ...current, [key]: event.target.value === 'true' }))}><option value="">请选择</option><option value="true">是</option><option value="false">否</option></select> : ['integer', 'number'].includes(definition.type ?? '') ? <input type="number" min={definition.minimum} max={definition.maximum} value={String(payload[key] ?? '')} onChange={(event) => setPayload((current) => ({ ...current, [key]: event.target.value === '' ? '' : Number(event.target.value) }))} /> : <textarea rows={3} value={String(payload[key] ?? '')} onChange={(event) => setPayload((current) => ({ ...current, [key]: event.target.value }))} />}{definition.description && <small>{definition.description}</small>}</label>)}</div>}
         <label>完成情况{policy.completionStatementRequired ? ' *' : ''}<textarea rows={4} value={completion} onChange={(event) => setCompletion(event.target.value)} placeholder="说明实际完成内容、结果和关键数据" /></label><label>异常与需协同事项{policy.exceptionStatementRequired ? ' *' : ''}<textarea rows={3} value={exception} onChange={(event) => setException(event.target.value)} placeholder="没有异常请填写“无”" /></label><label>下一步行动{policy.nextActionRequired ? ' *' : ''}<textarea rows={2} value={nextAction} onChange={(event) => setNextAction(event.target.value)} placeholder="需要继续跟进时填写" /></label>
-        <label className="attachment-picker">附件证据{policy.attachmentRequired ? ' *' : '（可选）'}<input type="file" multiple accept=".jpg,.jpeg,.png,.pdf,.docx,.xlsx" onChange={(event) => setAttachments(Array.from(event.target.files ?? []).slice(0, policy.maxAttachments))} /><small>{attachments.length ? `已选择 ${attachments.length} 个：${attachments.map((file) => file.name).join('、')}` : '支持图片、PDF、Word、Excel；先上传成功，再提交工作记录'}</small></label></>}
+        {!!activeRequirements.length && <section className="camera-evidence">
+          <div><strong>现场拍照</strong><small>照片上传后由服务端加盖门店、可信时间和证据编号水印{hasInstanceRequirements ? '；每个房号至少上传 1 张，可继续追加，照片数量不限' : `；楼层公区按本店 ${item.guestRoomFloorCount ?? 1} 层计算`}</small></div>
+          {activeRequirements.map((requirement) => {
+            if ((requirement.requiredInstances ?? 0) > 0 && requirement.instanceField) {
+              return <section className="room-evidence-group" key={requirement.checkpointCode}>
+                <header><strong>{requirement.label}</strong><small>需完成 {requirement.requiredInstances} 间，房号不可重复</small></header>
+                <div className="room-evidence-grid">{instanceValues(requirement).map((roomNumber, roomIndex) => {
+                  const instanceKey = normalizedInstanceKey(roomNumber)
+                  const storedCount = existing?.status === 'DRAFT' ? existing.attachments.filter((entry) => entry.checkpointCode === requirement.checkpointCode && normalizedInstanceKey(entry.evidenceInstanceKey ?? '') === instanceKey).length : 0
+                  const pendingCount = attachments.filter((entry) => entry.checkpointCode === requirement.checkpointCode && normalizedInstanceKey(entry.evidenceInstanceKey ?? '') === instanceKey).length
+                  const photoCount = instanceKey ? storedCount + pendingCount : 0
+                  return <article className={photoCount >= (requirement.minimumPerInstance ?? 1) ? 'room-evidence-card completed' : 'room-evidence-card'} key={`${requirement.checkpointCode}-${roomIndex}`}>
+                    <label>{requirement.instanceLabel ?? '房号'} {roomIndex + 1} *<input value={roomNumber} maxLength={32} placeholder="例如 1208" onChange={(event) => updateInstanceValue(requirement, roomIndex, event.target.value)} onBlur={(event) => updateInstanceValue(requirement, roomIndex, normalizedInstanceKey(event.target.value))} /></label>
+                    <div><span>{photoCount} 张·数量不限</span><label className="room-photo-button"><input type="file" accept="image/*" capture="environment" multiple disabled={!instanceKey} onChange={(event) => { const selected = Array.from(event.target.files ?? []).map((file) => ({ file, captureSource: 'CAMERA' as const, checkpointCode: requirement.checkpointCode, evidenceInstanceKey: instanceKey, capturedAtClient: new Date().toISOString() })); appendAttachments(selected); event.currentTarget.value = '' }} />{photoCount ? '继续上传' : '拍照/上传'}</label></div>
+                  </article>
+                })}</div>
+              </section>
+            }
+            const minimum = requirementMinimum(requirement)
+            const count = attachments.filter((entry) => entry.checkpointCode === requirement.checkpointCode && entry.captureSource === 'CAMERA').length + (existing?.status === 'DRAFT' ? existing.attachments.filter((entry) => entry.checkpointCode === requirement.checkpointCode && entry.captureSource === 'CAMERA').length : 0)
+            return <div className="camera-grid" key={requirement.checkpointCode}><label className={count >= minimum ? 'camera-checkpoint completed' : 'camera-checkpoint'}><span>{requirement.label}<small>{count}/{minimum} 张{requirement.recommendedMaximum ? `，建议不超过 ${requirement.recommendedMaximum}` : ''}</small></span><input type="file" accept="image/*" capture="environment" onChange={(event) => { const file = event.target.files?.[0]; if (file) appendAttachments([{ file, captureSource: 'CAMERA', checkpointCode: requirement.checkpointCode, capturedAtClient: new Date().toISOString() }]); event.currentTarget.value = '' }} /><b>{count >= minimum ? '已拍摄' : '打开相机'}</b></label></div>
+          })}
+        </section>}
+        <label className="attachment-picker">补充文件{policy.attachmentRequired ? ' *' : '（可选）'}<input type="file" multiple accept=".jpg,.jpeg,.png,.pdf,.docx,.xlsx" onChange={(event) => { const selected = Array.from(event.target.files ?? []).map((file) => ({ file, captureSource: 'FILE_PICKER' as const })); appendAttachments(selected); event.currentTarget.value = '' }} /><small>{attachments.length ? `待上传 ${attachments.length} 个：${attachments.map((entry) => entry.file.name).join('、')}` : '可追加图片、PDF、Word、Excel；保存草稿后上传，提交时再次校验证据'}</small></label>{!!attachments.length && <div className="pending-evidence-list">{attachments.map((entry, index) => <button type="button" className="secondary" key={`${entry.file.name}-${index}`} onClick={() => setAttachments((current) => current.filter((_, currentIndex) => currentIndex !== index))}>{entry.evidenceInstanceKey ? `房号 ${entry.evidenceInstanceKey}` : entry.checkpointCode ? '现场' : '文件'} · {entry.file.name} ×</button>)}</div>}</>}
       {!canSubmit && !viewOnly && <div className="inline-warning">此条接口数据尚未返回完整提交上下文；页面不会猜测任职或表单版本。</div>}{message && <div className="inline-error">{message}</div>}
     </div><footer><button className="secondary" onClick={onClose}>关闭</button>{!viewOnly && !loadingRecord && <><button className="secondary" disabled={!!saving} onClick={() => void persist(false)}>{saving === 'draft' ? '保存中…' : '保存草稿'}</button><button className="primary" disabled={!!saving} onClick={() => void persist(true)}>{saving === 'submit' ? '上传并提交中…' : item.status === 'FAILED' ? '重新提交' : '上传并提交'}</button></>}</footer>
   </section></div>
@@ -388,6 +538,7 @@ function MyWork({ identity, routeParams, go }: { identity: RoleContext; routePar
   const [filter, setFilter] = useState(requestedFilter)
   const [editing, setEditing] = useState<WorkExpectation>()
   const [opening, setOpening] = useState<string>()
+  const [deepLinkHandled, setDeepLinkHandled] = useState<string>()
   const [openError, setOpenError] = useState<string>()
   useEffect(() => setFilter(requestedFilter), [requestedFilter])
   const items = filter === 'ALL'
@@ -403,6 +554,13 @@ function MyWork({ identity, routeParams, go }: { identity: RoleContext; routePar
     } catch (error) { setOpenError(error instanceof Error ? error.message : '工作详情加载失败') }
     finally { setOpening(undefined) }
   }
+  useEffect(() => {
+    const expectationId = routeParams.expectationId
+    if (!expectationId || resource.loading || deepLinkHandled === expectationId) return
+    const item = resource.data.find((candidate) => candidate.id === expectationId)
+    setDeepLinkHandled(expectationId)
+    if (item) void openRecord(item)
+  }, [routeParams.expectationId, resource.loading, resource.data, deepLinkHandled])
   return <section className="page-section"><PageHeader eyebrow="POSITION WORK" title="我的工作" description={`当前任职：${identity.label} · ${identity.orgName}。每条记录绑定精确任职，不因切换岗位而串岗。`} actions={<SourceFlag source={resource.source} />} />
     <div className="filters">{workFilters.map((item) => <button className={filter === item ? 'active' : ''} onClick={() => { setFilter(item); go('my-work', { ...routeParams, status: item === 'ALL' ? undefined : item }) }} key={item}>{item === 'ALL' ? '全部' : item === 'PENDING_WORK' ? '待完成' : label(item)}</button>)}</div>
     {openError && <div className="inline-error page-error">{openError}</div>}

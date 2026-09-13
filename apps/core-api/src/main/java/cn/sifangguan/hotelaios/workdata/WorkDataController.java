@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.nio.charset.StandardCharsets;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -111,9 +112,14 @@ public class WorkDataController {
     @ResponseStatus(HttpStatus.CREATED)
     public Map<String, Object> uploadAttachment(
             @PathVariable UUID recordId,
-            @RequestPart("file") MultipartFile file
+            @RequestPart("file") MultipartFile file,
+            @RequestParam(defaultValue = "FILE_PICKER") String captureSource,
+            @RequestParam(required = false) String checkpointCode,
+            @RequestParam(required = false) String evidenceInstanceKey,
+            @RequestParam(required = false) OffsetDateTime capturedAtClient
     ) {
-        return attachmentService.upload(recordId, file);
+        return attachmentService.upload(recordId, file, captureSource, checkpointCode,
+                evidenceInstanceKey, capturedAtClient);
     }
 
     @GetMapping("/records/{recordId}/attachments")

@@ -106,7 +106,14 @@ export function resolveNotificationNavigation(
       actionLabel: '查看评价',
     }
   }
-  if (sourceType === 'WORK_RECORD' || sourceType === 'WORK_EXPECTATION' || type.startsWith('WORK_')) {
+  if (sourceType === 'WORK_EXPECTATION') {
+    return {
+      view: 'my-work',
+      params: sourceId ? { expectationId: sourceId } : undefined,
+      actionLabel: '去完成',
+    }
+  }
+  if (sourceType === 'WORK_RECORD' || type.startsWith('WORK_')) {
     return { view: type.includes('SUBMITTED') ? 'team-work' : 'my-work', actionLabel: '查看工作' }
   }
   if (sourceType === 'RULE' || sourceType === 'MANAGEMENT_EVENT' || type.startsWith('RULE_')) {

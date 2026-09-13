@@ -1,0 +1,567 @@
+package cn.sifangguan.hotelaios.workpackage;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+
+import javax.imageio.ImageIO;
+import javax.sql.DataSource;
+import java.awt.Color;
+import java.awt.Graphics2D;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.sql.Connection;
+import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
+class StoreManagerDailyClosedLoopIntegrationTest {
+    private static final String TENANT = "10000000-0000-0000-0000-000000000001";
+    private static final String CEO = "19000000-0000-0000-0000-000000000001";
+    private static final String GENERAL_MANAGER = "19000000-0000-0000-0000-000000000002";
+    private static final String GENERAL_MANAGER_EMPLOYEE = "19100000-0000-0000-0000-000000000001";
+    private static final String GENERAL_MANAGER_ASSIGNMENT = "19200000-0000-0000-0000-000000000001";
+    private static final String ASSISTANT_GENERAL_MANAGER = "19000000-0000-0000-0000-000000000008";
+    private static final String ASSISTANT_GENERAL_MANAGER_EMPLOYEE = "19100000-0000-0000-0000-000000000007";
+    private static final String ASSISTANT_GENERAL_MANAGER_ASSIGNMENT = "19200000-0000-0000-0000-000000000008";
+    private static final String HOTEL = "12000000-0000-0000-0000-000000000003";
+    private static final String PACKAGE_VERSION = "47030000-0000-0000-0000-000000000001";
+    private static final String MORNING_ITEM = "47050000-0000-0000-0000-000000000002";
+    private static final String MORNING_FORM = "47020000-0000-0000-0000-000000000002";
+    private static final String ROOM_ITEM = "47050000-0000-0000-0000-000000000005";
+    private static final String ROOM_FORM = "47020000-0000-0000-0000-000000000005";
+    private static final String REPORT_TEMPLATE = "47100000-0000-0000-0000-000000000001";
+
+    private static final EmbeddedPostgres POSTGRES = startPostgres();
+    private static final DataSource DATA_SOURCE = POSTGRES.getPostgresDatabase();
+    private static final String JDBC_URL = jdbcUrl(DATA_SOURCE);
+    private static final Path ATTACHMENT_ROOT = createAttachmentRoot();
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Autowired
+    private JdbcTemplate jdbc;
+
+    @Autowired
+    private WorkExpectationSlaService slaService;
+
+    @DynamicPropertySource
+    static void databaseProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", () -> JDBC_URL);
+        registry.add("spring.datasource.username", () -> "postgres");
+        registry.add("spring.datasource.password", () -> "postgres");
+        registry.add("spring.flyway.user", () -> "postgres");
+        registry.add("spring.flyway.password", () -> "postgres");
+        registry.add("app.security.development-header-auth-enabled", () -> true);
+        registry.add("app.database.rls-enabled", () -> true);
+        registry.add("app.work-expectation.sla.scheduler-enabled", () -> false);
+        registry.add("app.attachments.root", ATTACHMENT_ROOT::toString);
+    }
+
+    @AfterAll
+    static void stopPostgres() throws Exception {
+        POSTGRES.close();
+    }
+
+    @Test
+    void storeManagerRoutineClosesFromScheduleThroughEvidenceReviewAndDailyReport() throws Exception {
+        assertPublishedTemplateContract();
+
+        LocalDate businessDate = LocalDate.now();
+        slaService.processTenantAsSystem(UUID.fromString(TENANT), 100, UUID.randomUUID());
+        List<String> expectationIds = jdbc.queryForList("""
+                select expectation.id::text from work_expectation expectation
+                join work_package_item item
+                  on item.tenant_id = expectation.tenant_id
+                 and item.id = expectation.work_package_item_id
+                where expectation.tenant_id = ?::uuid
+                  and item.work_package_version_id = ?::uuid
+                  and expectation.position_assignment_id = ?::uuid
+                  and expectation.business_date = ?
+                order by expectation.due_at, expectation.id
+                """, String.class, TENANT, PACKAGE_VERSION, GENERAL_MANAGER_ASSIGNMENT, businessDate);
+        assertThat(expectationIds).hasSize(7);
+        int elapsedReminderMoments = jdbc.queryForObject("""
+                select count(*)
+                from work_expectation expectation
+                join work_package_item item
+                  on item.tenant_id = expectation.tenant_id
+                 and item.id = expectation.work_package_item_id
+                join tenant on tenant.id = expectation.tenant_id
+                cross join lateral jsonb_array_elements(item.reminder_policy -> 'moments') moment
+                where expectation.tenant_id = ?::uuid
+                  and expectation.id = any(?::uuid[])
+                  and (moment ->> 'localTime')::time
+                      <= (timezone(tenant.timezone, now()))::time
+                """, Integer.class, TENANT, "{" + String.join(",", expectationIds) + "}");
+        if (elapsedReminderMoments == 0) {
+            assertThat(reminderCount(expectationIds, null)).isZero();
+        } else {
+            assertThat(reminderCount(expectationIds, null)).isPositive();
+        }
+        assertThat(jdbc.queryForObject("""
+                select count(*) from work_expectation_reminder
+                where tenant_id = ?::uuid and work_expectation_id = any(?::uuid[])
+                  and reminder_stage ~ '^[A-Z][A-Z0-9_]{0,23}$'
+                """, Integer.class, TENANT, "{" + String.join(",", expectationIds) + "}"))
+                .isEqualTo(reminderCount(expectationIds, null));
+
+        String morningExpectation = jdbc.queryForObject("""
+                select id::text from work_expectation
+                where tenant_id = ?::uuid and work_package_item_id = ?::uuid
+                  and position_assignment_id = ?::uuid and business_date = ?
+                """, String.class, TENANT, MORNING_ITEM, GENERAL_MANAGER_ASSIGNMENT, businessDate);
+        assertThat(morningExpectation).isNotBlank();
+
+        JsonNode myWork = response(identity(get("/api/v1/my/work-expectations"),
+                GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT), 200);
+        JsonNode morningResource = findById(myWork, morningExpectation);
+        JsonNode reminderPolicy = jsonColumn(morningResource.path("reminder_policy"));
+        JsonNode submissionPolicy = jsonColumn(morningResource.path("submission_policy"));
+        assertThat(reminderPolicy.path("moments").path(0).path("code").asText()).isEqualTo("R0930");
+        assertThat(submissionPolicy.path("evidenceRequirements").path(0)
+                .path("checkpointCode").asText()).isEqualTo("full_body");
+
+        JsonNode assistantWork = response(identity(get("/api/v1/my/work-expectations"),
+                ASSISTANT_GENERAL_MANAGER, ASSISTANT_GENERAL_MANAGER_ASSIGNMENT), 200);
+        assertThat(findById(assistantWork, morningExpectation).path("id").asText())
+                .isEqualTo(morningExpectation);
+        JsonNode assistantDraft = response(identity(post("/api/v1/work-data/records"),
+                        ASSISTANT_GENERAL_MANAGER, ASSISTANT_GENERAL_MANAGER_ASSIGNMENT)
+                .contentType("application/json")
+                .content("""
+                        {
+                          "orgUnitId":"%s",
+                          "employeeId":"%s",
+                          "positionAssignmentId":"%s",
+                          "formVersionId":"%s",
+                          "businessDate":"%s",
+                          "payload":{"expectedAttendance":12,"actualAttendance":12,
+                            "appearancePassed":true,"meetingTopic":"共享事项测试",
+                            "meetingNotes":"副店长可按店长模板形成草稿"},
+                          "completionStatement":"副店长共享执行测试",
+                          "workPackageVersionId":"%s",
+                          "workPackageItemId":"%s",
+                          "workExpectationId":"%s",
+                          "recordKind":"INSPECTION",
+                          "targetOrgUnitId":"%s",
+                          "saveAsDraft":true
+                        }
+                        """.formatted(HOTEL, ASSISTANT_GENERAL_MANAGER_EMPLOYEE,
+                        ASSISTANT_GENERAL_MANAGER_ASSIGNMENT, MORNING_FORM, businessDate,
+                        PACKAGE_VERSION, MORNING_ITEM, morningExpectation, HOTEL)), 201);
+
+        JsonNode draft = response(identity(post("/api/v1/work-data/records"),
+                        GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT)
+                .contentType("application/json")
+                .content("""
+                        {
+                          "orgUnitId":"%s",
+                          "employeeId":"%s",
+                          "positionAssignmentId":"%s",
+                          "formVersionId":"%s",
+                          "businessDate":"%s",
+                          "payload":{"expectedAttendance":12,"actualAttendance":12,
+                            "appearancePassed":true,"meetingTopic":"今日服务标准",
+                            "meetingNotes":"确认当班分工与重点接待"},
+                          "completionStatement":"仪容仪表检查及晨会已完成",
+                          "workPackageVersionId":"%s",
+                          "workPackageItemId":"%s",
+                          "workExpectationId":"%s",
+                          "recordKind":"INSPECTION",
+                          "targetOrgUnitId":"%s",
+                          "saveAsDraft":true
+                        }
+                        """.formatted(HOTEL, GENERAL_MANAGER_EMPLOYEE, GENERAL_MANAGER_ASSIGNMENT,
+                        MORNING_FORM, businessDate, PACKAGE_VERSION, MORNING_ITEM, morningExpectation, HOTEL)), 201);
+        String recordId = draft.path("id").asText();
+
+        mockMvc.perform(identity(post("/api/v1/work-data/records/{recordId}/actions/submit", recordId),
+                        GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT)
+                        .contentType("application/json").content("{\"expectedVersion\":0}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("全体员工全身照")));
+
+        mockMvc.perform(identity(multipart(
+                        "/api/v1/work-data/records/{recordId}/attachments/upload", recordId)
+                        .file(new MockMultipartFile("file", "forged.png", "image/png", cameraPhoto()))
+                        .param("captureSource", "SYSTEM"),
+                GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("不支持的证据采集方式")));
+
+        OffsetDateTime capturedAt = OffsetDateTime.now().minusSeconds(2).withNano(0);
+        MockMultipartFile photo = new MockMultipartFile(
+                "file", "appearance.png", "image/png", cameraPhoto());
+        JsonNode uploaded = response(identity(multipart(
+                        "/api/v1/work-data/records/{recordId}/attachments/upload", recordId)
+                        .file(photo)
+                        .param("captureSource", "CAMERA")
+                        .param("checkpointCode", "full_body")
+                        .param("capturedAtClient", capturedAt.toString()),
+                GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT), 201);
+        assertThat(uploaded.path("captureSource").asText()).isEqualTo("CAMERA");
+        assertThat(uploaded.path("checkpointCode").asText()).isEqualTo("full_body");
+        assertThat(uploaded.path("sha256").asText()).isNotEqualTo(uploaded.path("sourceSha256").asText());
+        assertThat(jdbc.queryForObject("""
+                select evidence_metadata ->> 'trustedTimestampSource'
+                from attachment where tenant_id = ?::uuid and id = ?::uuid
+                """, String.class, TENANT, uploaded.path("id").asText())).isEqualTo("SERVER_RECEIVED_AT");
+
+        byte[] watermarked = mockMvc.perform(identity(get(
+                        "/api/v1/work-data/attachments/{attachmentId}/content", uploaded.path("id").asText()),
+                        GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        BufferedImage watermarkedImage = ImageIO.read(new ByteArrayInputStream(watermarked));
+        assertThat(watermarkedImage).isNotNull();
+        assertThat(watermarkedImage.getWidth()).isEqualTo(800);
+        assertThat(watermarkedImage.getHeight()).isEqualTo(600);
+
+        for (String checkpoint : List.of("upper_body", "meeting_minutes")) {
+            mockMvc.perform(identity(multipart(
+                            "/api/v1/work-data/records/{recordId}/attachments/upload", recordId)
+                            .file(new MockMultipartFile("file", checkpoint + ".png", "image/png", cameraPhoto()))
+                            .param("captureSource", "CAMERA")
+                            .param("checkpointCode", checkpoint)
+                            .param("capturedAtClient", OffsetDateTime.now().minusSeconds(1).toString()),
+                    GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT))
+                    .andExpect(status().isCreated());
+        }
+
+        UUID reportId = UUID.randomUUID();
+        UUID revisionId = UUID.randomUUID();
+        createDraftReport(reportId, revisionId, businessDate);
+
+        mockMvc.perform(identity(post("/api/v1/work-data/records/{recordId}/actions/submit", recordId),
+                        GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT)
+                        .contentType("application/json").content("{\"expectedVersion\":0}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUBMITTED"));
+        mockMvc.perform(identity(post("/api/v1/work-data/records/{recordId}/actions/review", recordId),
+                        ASSISTANT_GENERAL_MANAGER, ASSISTANT_GENERAL_MANAGER_ASSIGNMENT)
+                        .contentType("application/json")
+                        .content("{\"outcome\":\"APPROVED\",\"reason\":\"越级尝试\",\"expectedVersion\":1}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("直属主管")));
+        mockMvc.perform(identity(post("/api/v1/work-data/records/{recordId}/actions/review", recordId), CEO, null)
+                        .contentType("application/json")
+                        .content("{\"outcome\":\"APPROVED\",\"reason\":\"证据完整\",\"expectedVersion\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("APPROVED"));
+        mockMvc.perform(identity(post("/api/v1/work-data/records/{recordId}/actions/submit",
+                        assistantDraft.path("id").asText()), ASSISTANT_GENERAL_MANAGER,
+                        ASSISTANT_GENERAL_MANAGER_ASSIGNMENT)
+                        .contentType("application/json").content("{\"expectedVersion\":0}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("其他人员提交")));
+
+        assertThat(jdbc.queryForObject("select status from work_expectation where id = ?::uuid",
+                String.class, morningExpectation)).isEqualTo("SATISFIED");
+        assertThat(jdbc.queryForObject("""
+                select count(*) from daily_report_item_result
+                where tenant_id = ?::uuid and revision_id = ? and system_prefilled = true
+                """, Integer.class, TENANT, revisionId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                select count(*) from daily_report_source_reference
+                where tenant_id = ?::uuid and revision_id = ? and source_type = 'WORK_RECORD'
+                  and source_id = ?::uuid
+                """, Integer.class, TENANT, revisionId, recordId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                select count(*) from daily_report_evidence
+                where tenant_id = ?::uuid and revision_id = ?
+                """, Integer.class, TENANT, revisionId)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("""
+                select narrative from daily_report_revision
+                where tenant_id = ?::uuid and id = ?
+                """, String.class, TENANT, revisionId))
+                .contains("已完成 1/7 项", "关联证据 3 份");
+        assertThat(jdbc.queryForObject("""
+                select count(*) from ai_request request
+                join ai_recommendation recommendation
+                  on recommendation.tenant_id = request.tenant_id
+                 and recommendation.ai_request_id = request.id
+                where request.tenant_id = ?::uuid
+                  and request.provider_code = 'INTERNAL_RULE_ENGINE'
+                  and request.input_snapshot ->> 'reportId' = ?
+                """, Integer.class, TENANT, reportId.toString())).isEqualTo(1);
+    }
+
+    @Test
+    void roomInspectionRequiresFiveRoomsTwoDirtyRoomsAndEvidenceForEveryRoom() throws Exception {
+        LocalDate businessDate = LocalDate.now();
+        slaService.processTenantAsSystem(UUID.fromString(TENANT), 100, UUID.randomUUID());
+        String expectationId = jdbc.queryForObject("""
+                select id::text from work_expectation
+                where tenant_id = ?::uuid and work_package_item_id = ?::uuid
+                  and position_assignment_id = ?::uuid and business_date = ?
+                """, String.class, TENANT, ROOM_ITEM, GENERAL_MANAGER_ASSIGNMENT, businessDate);
+
+        JsonNode resource = findById(response(identity(get("/api/v1/my/work-expectations"),
+                GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT), 200), expectationId);
+        JsonNode submissionPolicy = jsonColumn(resource.path("submission_policy"));
+        assertThat(submissionPolicy.path("attachmentCountUnlimited").asBoolean()).isTrue();
+        assertThat(submissionPolicy.path("maxAttachments").asInt()).isEqualTo(200);
+        assertThat(submissionPolicy.path("evidenceRequirements").path(0)
+                .path("requiredInstances").asInt()).isEqualTo(5);
+        assertThat(submissionPolicy.path("evidenceRequirements").path(1)
+                .path("requiredInstances").asInt()).isEqualTo(2);
+
+        JsonNode draft = response(identity(post("/api/v1/work-data/records"),
+                        GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT)
+                .contentType("application/json")
+                .content("""
+                        {
+                          "orgUnitId":"%s",
+                          "employeeId":"%s",
+                          "positionAssignmentId":"%s",
+                          "formVersionId":"%s",
+                          "businessDate":"%s",
+                          "payload":{
+                            "roomInspectionRoomNumbers":["1201","1202","1203","1204","1205"],
+                            "dirtyRoomNumbers":["1301","1302"],
+                            "issueFound":false
+                          },
+                          "completionStatement":"已完成5间查房和2间走脏房检查",
+                          "workPackageVersionId":"%s",
+                          "workPackageItemId":"%s",
+                          "workExpectationId":"%s",
+                          "recordKind":"INSPECTION",
+                          "targetOrgUnitId":"%s",
+                          "saveAsDraft":true
+                        }
+                        """.formatted(HOTEL, GENERAL_MANAGER_EMPLOYEE, GENERAL_MANAGER_ASSIGNMENT,
+                        ROOM_FORM, businessDate, PACKAGE_VERSION, ROOM_ITEM, expectationId, HOTEL)), 201);
+        String recordId = draft.path("id").asText();
+
+        mockMvc.perform(identity(post("/api/v1/work-data/records/{recordId}/actions/submit", recordId),
+                        GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT)
+                        .contentType("application/json").content("{\"expectedVersion\":0}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("1201")));
+
+        for (String roomNumber : List.of("1201", "1202", "1203", "1204", "1205")) {
+            uploadRoomPhoto(recordId, "room_inspection", roomNumber);
+        }
+        for (String roomNumber : List.of("1301", "1302")) {
+            uploadRoomPhoto(recordId, "dirty_room", roomNumber);
+        }
+        JsonNode extraPhoto = uploadRoomPhoto(recordId, "room_inspection", "1201");
+        assertThat(extraPhoto.path("evidenceInstanceKey").asText()).isEqualTo("1201");
+        assertThat(jdbc.queryForObject("""
+                select count(*) from attachment
+                where tenant_id = ?::uuid and work_record_id = ?::uuid
+                  and evidence_metadata ->> 'evidenceInstanceKey' = '1201'
+                """, Integer.class, TENANT, recordId)).isEqualTo(2);
+
+        mockMvc.perform(identity(post("/api/v1/work-data/records/{recordId}/actions/submit", recordId),
+                        GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT)
+                        .contentType("application/json").content("{\"expectedVersion\":0}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUBMITTED"));
+    }
+
+    private JsonNode uploadRoomPhoto(String recordId, String checkpointCode, String roomNumber)
+            throws Exception {
+        return response(identity(multipart(
+                        "/api/v1/work-data/records/{recordId}/attachments/upload", recordId)
+                        .file(new MockMultipartFile("file", roomNumber + ".png", "image/png", cameraPhoto()))
+                        .param("captureSource", "CAMERA")
+                        .param("checkpointCode", checkpointCode)
+                        .param("evidenceInstanceKey", roomNumber)
+                        .param("capturedAtClient", OffsetDateTime.now().minusSeconds(1).toString()),
+                GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT), 201);
+    }
+
+    private void assertPublishedTemplateContract() {
+        assertThat(jdbc.queryForObject("""
+                select count(*)
+                from employee_position_assignment store_manager
+                join employee_position_assignment group_manager
+                  on group_manager.tenant_id = store_manager.tenant_id
+                 and group_manager.id = store_manager.manager_assignment_id
+                join employee group_manager_employee
+                  on group_manager_employee.tenant_id = group_manager.tenant_id
+                 and group_manager_employee.id = group_manager.employee_id
+                join position_definition group_manager_position
+                  on group_manager_position.tenant_id = group_manager.tenant_id
+                 and group_manager_position.id = group_manager.position_id
+                where store_manager.tenant_id = ?::uuid
+                  and store_manager.id = ?::uuid
+                  and group_manager_employee.account_id = ?::uuid
+                  and group_manager_position.code = 'GROUP_GENERAL_MANAGER'
+                """, Integer.class, TENANT, GENERAL_MANAGER_ASSIGNMENT, CEO)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                select count(*) from work_package_item
+                where tenant_id = ?::uuid and work_package_version_id = ?::uuid
+                  and report_policy ->> 'dailyReport' = 'true'
+                """, Integer.class, TENANT, PACKAGE_VERSION)).isEqualTo(7);
+        assertThat(jdbc.queryForObject("""
+                select count(*) from work_package_item
+                where tenant_id = ?::uuid and work_package_version_id = ?::uuid
+                  and reminder_policy <> '{}'::jsonb
+                """, Integer.class, TENANT, PACKAGE_VERSION)).isEqualTo(6);
+        assertThat(jdbc.queryForObject("""
+                select jsonb_array_length(submission_policy -> 'evidenceRequirements')
+                from work_package_item where tenant_id = ?::uuid
+                  and item_code = 'GM_PUBLIC_AREA_INSPECTION_AM'
+                """, Integer.class, TENANT)).isEqualTo(12);
+        assertThat(jdbc.queryForObject("""
+                select count(*) from daily_report_template_item item
+                join daily_report_template_section relation
+                  on relation.tenant_id = item.tenant_id
+                 and relation.section_version_id = item.section_version_id
+                where item.tenant_id = ?::uuid and relation.template_version_id = ?::uuid
+                """, Integer.class, TENANT, REPORT_TEMPLATE)).isEqualTo(8);
+        assertThat(jdbc.queryForObject("""
+                select count(*)
+                from position_function_profile profile
+                join position_definition position
+                  on position.tenant_id = profile.tenant_id and position.id = profile.position_id
+                join position_function_profile_version version
+                  on version.tenant_id = profile.tenant_id and version.profile_id = profile.id
+                join position_function_profile_permission grant_row
+                  on grant_row.tenant_id = version.tenant_id and grant_row.profile_version_id = version.id
+                join permission permission_item on permission_item.id = grant_row.permission_id
+                where profile.tenant_id = ?::uuid and position.code = 'GENERAL_MANAGER'
+                  and version.lifecycle_status = 'PUBLISHED'
+                  and permission_item.code = 'ui.module.my-work'
+                """, Integer.class, TENANT)).isPositive();
+    }
+
+    private int reminderCount(List<String> expectationIds, String stage) {
+        String stagePredicate = stage == null ? "" : " and reminder_stage = '" + stage + "'";
+        return jdbc.queryForObject("""
+                select count(*) from work_expectation_reminder
+                where tenant_id = ?::uuid and work_expectation_id = any(?::uuid[])
+                """ + stagePredicate, Integer.class, TENANT,
+                "{" + String.join(",", expectationIds) + "}");
+    }
+
+    private void createDraftReport(UUID reportId, UUID revisionId, LocalDate businessDate) {
+        jdbc.update("""
+                insert into daily_report
+                    (id, tenant_id, hotel_org_unit_id, org_unit_id, employee_id,
+                     position_assignment_id, business_date, timezone, cutoff_local_time,
+                     report_deadline_at, template_version_id, work_package_version_id,
+                     report_status, review_status, current_revision_no, trace_id,
+                     created_by_account_id)
+                values (?, ?::uuid, ?::uuid, ?::uuid, ?::uuid, ?::uuid, ?, 'Asia/Shanghai',
+                        time '06:00', now() + interval '12 hours', ?::uuid, ?::uuid,
+                        'DRAFT', 'NOT_REQUIRED', 1, ?, ?::uuid)
+                """, reportId, TENANT, HOTEL, HOTEL, GENERAL_MANAGER_EMPLOYEE,
+                GENERAL_MANAGER_ASSIGNMENT, businessDate, REPORT_TEMPLATE, PACKAGE_VERSION,
+                UUID.randomUUID(), GENERAL_MANAGER);
+        jdbc.update("""
+                insert into daily_report_revision
+                    (id, tenant_id, report_id, revision_no, revision_type,
+                     revision_status, payload_snapshot, created_by_account_id)
+                values (?, ?::uuid, ?, 1, 'ORIGINAL', 'DRAFT', '{}'::jsonb, ?::uuid)
+                """, revisionId, TENANT, reportId, GENERAL_MANAGER);
+        jdbc.update("""
+                update daily_report set current_revision_id = ?
+                where tenant_id = ?::uuid and id = ?
+                """, revisionId, TENANT, reportId);
+    }
+
+    private MockHttpServletRequestBuilder identity(
+            MockHttpServletRequestBuilder request,
+            String accountId,
+            String assignmentId
+    ) {
+        request.header("X-Tenant-Id", TENANT).header("X-Actor-Id", accountId);
+        if (assignmentId != null) request.header("X-Assignment-Id", assignmentId);
+        return request;
+    }
+
+    private JsonNode response(MockHttpServletRequestBuilder request, int expectedStatus) throws Exception {
+        MvcResult result = mockMvc.perform(request).andExpect(status().is(expectedStatus)).andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString());
+    }
+
+    private JsonNode findById(JsonNode array, String id) {
+        for (JsonNode item : array) {
+            if (id.equals(item.path("id").asText())) return item;
+        }
+        throw new AssertionError("response does not contain id " + id);
+    }
+
+    private JsonNode jsonColumn(JsonNode node) throws Exception {
+        if (node.isTextual()) return objectMapper.readTree(node.asText());
+        if (node.isObject() && node.path("value").isTextual()) {
+            return objectMapper.readTree(node.path("value").asText());
+        }
+        return node;
+    }
+
+    private static byte[] cameraPhoto() {
+        try {
+            BufferedImage image = new BufferedImage(800, 600, BufferedImage.TYPE_INT_RGB);
+            Graphics2D graphics = image.createGraphics();
+            graphics.setColor(new Color(235, 242, 247));
+            graphics.fillRect(0, 0, image.getWidth(), image.getHeight());
+            graphics.setColor(new Color(28, 79, 110));
+            graphics.fillRect(80, 90, 640, 360);
+            graphics.dispose();
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            ImageIO.write(image, "png", output);
+            return output.toByteArray();
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static EmbeddedPostgres startPostgres() {
+        try {
+            return EmbeddedPostgres.builder().start();
+        } catch (Exception exception) {
+            throw new ExceptionInInitializerError(exception);
+        }
+    }
+
+    private static Path createAttachmentRoot() {
+        try {
+            return Files.createTempDirectory("store-manager-closed-loop-");
+        } catch (Exception exception) {
+            throw new ExceptionInInitializerError(exception);
+        }
+    }
+
+    private static String jdbcUrl(DataSource dataSource) {
+        try (Connection connection = dataSource.getConnection()) {
+            return connection.getMetaData().getURL();
+        } catch (Exception exception) {
+            throw new ExceptionInInitializerError(exception);
+        }
+    }
+}

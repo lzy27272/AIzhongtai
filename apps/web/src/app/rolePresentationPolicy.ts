@@ -24,6 +24,7 @@ export type MobilePresentationTab = Readonly<{
 
 export type MobilePresentationTarget =
   | 'workbench'
+  | 'my-work'
   | 'tasks'
   | 'daily-reports-my'
   | 'team-work'
@@ -118,11 +119,11 @@ const POLICIES: Readonly<Record<RolePresentationKey, RolePresentationPolicy>> = 
     knownRole: true,
     focus: '全店任务、日报、经营指标、规则与验收',
     desktopModuleIds: modules(
-      'workbench', 'hotel-dashboard', 'team-work', 'tasks', 'daily-reports-my',
+      'workbench', 'hotel-dashboard', 'my-work', 'team-work', 'tasks', 'daily-reports-my',
       'daily-operations', 'kpi-center', 'rules', 'evaluations', 'notifications',
       'all-functions',
     ),
-    mobileTabs: tabs('门店', 'hotel-dashboard', '运营', 'daily-operations'),
+    mobileTabs: tabs('门店', 'hotel-dashboard', '运营', 'daily-operations', '工作', 'my-work'),
   }),
   REGIONAL_OPERATIONS: Object.freeze({
     key: 'REGIONAL_OPERATIONS',

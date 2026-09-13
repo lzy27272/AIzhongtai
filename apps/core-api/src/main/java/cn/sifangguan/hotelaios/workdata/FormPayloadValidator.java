@@ -20,7 +20,7 @@ public class FormPayloadValidator {
     private static final Set<String> SUPPORTED_KEYWORDS = Set.of(
             "$schema", "$id", "title", "description", "default", "examples",
             "type", "enum", "required", "properties", "additionalProperties", "items",
-            "minItems", "maxItems", "minLength", "maxLength", "pattern",
+            "minItems", "maxItems", "uniqueItems", "minLength", "maxLength", "pattern",
             "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"
     );
 
@@ -150,6 +150,15 @@ public class FormPayloadValidator {
         }
         if (schema.has("maxItems") && size > schema.path("maxItems").asInt()) {
             issues.add(path + " 项目数超过 " + schema.path("maxItems").asInt());
+        }
+        if (schema.path("uniqueItems").asBoolean(false)) {
+            Set<JsonNode> distinct = new java.util.HashSet<>();
+            for (JsonNode item : value) {
+                if (!distinct.add(item)) {
+                    issues.add(path + " 不能包含重复项目");
+                    break;
+                }
+            }
         }
         JsonNode itemSchema = schema.path("items");
         if (!itemSchema.isMissingNode()) {

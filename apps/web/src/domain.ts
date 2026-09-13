@@ -86,6 +86,7 @@ export type WorkExpectation = {
   itemName: string
   status: string
   businessDate: string
+  availableAt?: string
   dueAt?: string
   targetOrgName: string
   assigneeName: string
@@ -98,7 +99,17 @@ export type WorkExpectation = {
   formSchema?: {
     type?: string
     required?: string[]
-    properties?: Record<string, { type?: string; title?: string; description?: string; minimum?: number; maximum?: number }>
+    properties?: Record<string, {
+      type?: string
+      title?: string
+      description?: string
+      minimum?: number
+      maximum?: number
+      minItems?: number
+      maxItems?: number
+      uniqueItems?: boolean
+      items?: { type?: string; minLength?: number; maxLength?: number }
+    }>
   }
   workPackageVersionId?: string
   workPackageItemId?: string
@@ -108,6 +119,36 @@ export type WorkExpectation = {
   standards?: WorkStandardReference[]
   records?: WorkRecordSummary[]
   submissionPolicy?: SubmissionPolicy
+  reminderPolicy?: Record<string, unknown>
+  reportPolicy?: Record<string, unknown>
+  applicabilityPolicy?: Record<string, unknown>
+  executionPolicy?: { sharedPerOrg?: boolean; allowedPositionCodes?: string[]; delegationAllowed?: boolean; ownerRestOption?: boolean }
+  guestRoomFloorCount?: number
+  delegateAssignmentId?: string
+  delegatedEmployeeName?: string
+  ownerResting?: boolean
+}
+
+export type EvidenceRequirement = {
+  checkpointCode: string
+  label: string
+  captureSource?: 'CAMERA' | 'FILE_PICKER'
+  mediaTypes?: string[]
+  minimum?: number
+  recommendedMaximum?: number
+  minimumPerHotelFloor?: number
+  recommendedMaximumPerHotelFloor?: number
+  requiredInstances?: number
+  instanceField?: string
+  instanceLabel?: string
+  minimumPerInstance?: number
+  requiredWhen?: { field: string; equals: unknown }
+}
+
+export type DelegationCandidate = {
+  assignmentId: string
+  employeeName: string
+  positionName: string
 }
 
 export type SubmissionPolicy = {
@@ -116,8 +157,10 @@ export type SubmissionPolicy = {
   nextActionRequired: boolean
   attachmentRequired: boolean
   maxAttachments: number
+  attachmentCountUnlimited?: boolean
   maxFileSizeBytes: number
   allowedExtensions: string[]
+  evidenceRequirements: EvidenceRequirement[]
 }
 
 export type WorkStandardReference = {
@@ -145,6 +188,12 @@ export type WorkRecordAttachment = {
   sizeBytes: number
   sha256?: string
   scanStatus: string
+  captureSource?: string
+  checkpointCode?: string
+  evidenceInstanceKey?: string
+  capturedAtClient?: string
+  receivedAt?: string
+  sourceSha256?: string
   createdAt?: string
 }
 

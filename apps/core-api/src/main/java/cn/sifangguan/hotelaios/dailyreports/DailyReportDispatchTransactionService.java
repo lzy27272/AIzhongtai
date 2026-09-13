@@ -43,6 +43,7 @@ public class DailyReportDispatchTransactionService {
     private final BusinessEventPublisher eventPublisher;
     private final AuditWriter auditWriter;
     private final ObjectMapper objectMapper;
+    private final DailyReportRoutineProjectionService routineProjectionService;
 
     public DailyReportDispatchTransactionService(
             NamedParameterJdbcTemplate jdbc,
@@ -53,7 +54,8 @@ public class DailyReportDispatchTransactionService {
             NotificationService notificationService,
             BusinessEventPublisher eventPublisher,
             AuditWriter auditWriter,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            DailyReportRoutineProjectionService routineProjectionService
     ) {
         this.jdbc = jdbc;
         this.databaseContext = databaseContext;
@@ -64,6 +66,7 @@ public class DailyReportDispatchTransactionService {
         this.eventPublisher = eventPublisher;
         this.auditWriter = auditWriter;
         this.objectMapper = objectMapper;
+        this.routineProjectionService = routineProjectionService;
     }
 
     @Transactional(readOnly = true)
@@ -286,7 +289,8 @@ public class DailyReportDispatchTransactionService {
         boolean created = !inserted.isEmpty();
         if (created) {
             reportId = inserted.getFirst();
-            createOriginalRevision(principal, reportId, resolution, policy, dueAt, deadlineAt);
+            UUID revisionId = createOriginalRevision(principal, reportId, resolution, policy, dueAt, deadlineAt);
+            routineProjectionService.projectReport(reportId, revisionId);
             auditWriter.record(
                     "DAILY_REPORT_AUTO_CREATED",
                     "DAILY_REPORT",
@@ -414,7 +418,7 @@ public class DailyReportDispatchTransactionService {
         }
     }
 
-    private void createOriginalRevision(
+    private UUID createOriginalRevision(
             TenantPrincipal principal,
             UUID reportId,
             Map<String, Object> resolution,
@@ -455,6 +459,7 @@ public class DailyReportDispatchTransactionService {
                 update daily_report set current_revision_id = :revisionId
                 where tenant_id = :tenantId and id = :reportId
                 """, base(principal).addValue("reportId", reportId).addValue("revisionId", revisionId));
+        return revisionId;
     }
 
     private int publishStage(

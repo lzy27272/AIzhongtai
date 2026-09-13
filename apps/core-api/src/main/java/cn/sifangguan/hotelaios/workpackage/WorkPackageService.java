@@ -517,6 +517,54 @@ public class WorkPackageService {
         return generateExpectationsInternal(principal, request);
     }
 
+    /**
+     * Materializes every active DAY allocation for the tenant. The method is intentionally
+     * package-private: only the trusted SLA scheduler invokes it under a tenant-scoped system
+     * principal. The expectation business key keeps repeated scheduler ticks idempotent.
+     */
+    int generateDailyExpectationsForAutomation(LocalDate businessDate) {
+        TenantPrincipal principal = prepare();
+        List<AllocationTarget> targets = jdbc.query("""
+                select distinct a.position_assignment_id, a.target_org_unit_id
+                from work_package_allocation a
+                join work_package_version v
+                  on v.tenant_id = a.tenant_id and v.id = a.work_package_version_id
+                join work_package_item i
+                  on i.tenant_id = v.tenant_id and i.work_package_version_id = v.id
+                join employee_position_assignment assignment
+                  on assignment.tenant_id = a.tenant_id and assignment.id = a.position_assignment_id
+                join employee employee_row
+                  on employee_row.tenant_id = assignment.tenant_id
+                 and employee_row.id = assignment.employee_id
+                where a.tenant_id = :tenantId
+                  and a.status = 'ACTIVE'
+                  and a.valid_from <= :businessDate
+                  and (a.valid_to is null or a.valid_to >= :businessDate)
+                  and v.lifecycle_status = 'PUBLISHED'
+                  and v.effective_from::date <= :businessDate
+                  and (v.effective_to is null or v.effective_to::date >= :businessDate)
+                  and i.period_type = 'DAY'
+                  and (cardinality(i.weekdays) = 0
+                       or extract(isodow from cast(:businessDate as date))::smallint = any(i.weekdays))
+                  and assignment.status = 'ACTIVE'
+                  and assignment.valid_from <= :businessDate
+                  and (assignment.valid_to is null or assignment.valid_to >= :businessDate)
+                  and employee_row.employment_status = 'ACTIVE'
+                order by a.position_assignment_id, a.target_org_unit_id
+                """, base(principal).addValue("businessDate", businessDate),
+                (rs, rowNum) -> new AllocationTarget(
+                        rs.getObject("position_assignment_id", UUID.class),
+                        rs.getObject("target_org_unit_id", UUID.class)));
+        int created = 0;
+        for (AllocationTarget target : targets) {
+            Map<String, Object> result = generateExpectationsInternal(principal,
+                    new WorkPackageModels.GenerateExpectations(
+                            target.assignmentId(), target.targetOrgUnitId(), businessDate, "DAY", null));
+            created += ((Number) result.getOrDefault("createdCount", 0)).intValue();
+        }
+        return created;
+    }
+
     @Transactional(readOnly = true)
     public List<Map<String, Object>> teamExpectations(String status, LocalDate businessDate) {
         accessPolicy.requirePermission("work-record.review");
@@ -553,7 +601,50 @@ public class WorkPackageService {
             params.addValue("businessDate", businessDate);
         }
         if (mineOnly) {
-            predicates.add("e.account_id = :actorId");
+            predicates.add("""
+                    (
+                      e.account_id = :actorId
+                      or exists (
+                        select 1
+                        from work_expectation_delegation delegation
+                        join employee_position_assignment delegated_assignment
+                          on delegated_assignment.tenant_id = delegation.tenant_id
+                         and delegated_assignment.id = delegation.delegate_assignment_id
+                        join employee delegated_employee
+                          on delegated_employee.tenant_id = delegated_assignment.tenant_id
+                         and delegated_employee.id = delegated_assignment.employee_id
+                        where delegation.tenant_id = x.tenant_id
+                          and delegation.work_expectation_id = x.id
+                          and delegation.status = 'ACTIVE'
+                          and delegated_employee.account_id = :actorId
+                      )
+                      or (
+                        not exists (
+                          select 1 from work_expectation_delegation active_delegation
+                          where active_delegation.tenant_id = x.tenant_id
+                            and active_delegation.work_expectation_id = x.id
+                            and active_delegation.status = 'ACTIVE'
+                        )
+                        and exists (
+                          select 1
+                          from employee_position_assignment shared_assignment
+                          join employee shared_employee
+                            on shared_employee.tenant_id = shared_assignment.tenant_id
+                           and shared_employee.id = shared_assignment.employee_id
+                          join position_definition shared_position
+                            on shared_position.tenant_id = shared_assignment.tenant_id
+                           and shared_position.id = shared_assignment.position_id
+                          where shared_assignment.tenant_id = x.tenant_id
+                            and shared_assignment.org_unit_id = x.target_org_unit_id
+                            and shared_assignment.status = 'ACTIVE'
+                            and shared_assignment.valid_from <= x.business_date
+                            and (shared_assignment.valid_to is null or shared_assignment.valid_to >= x.business_date)
+                            and shared_employee.account_id = :actorId
+                            and jsonb_exists(coalesce(i.execution_policy -> 'allowedPositionCodes', '[]'::jsonb), shared_position.code)
+                        )
+                      )
+                    )
+                    """);
         }
         String filters = predicates.isEmpty() ? "" : " and " + String.join(" and ", predicates);
         String visibility = mineOnly ? "" : orgVisibility(principal, params, "x.target_org_unit_id");
@@ -563,7 +654,11 @@ public class WorkPackageService {
                        x.position_assignment_id, e.id as employee_id, e.name as employee_name, p.name as position_name,
                        x.target_org_unit_id, o.name as target_org_unit_name,
                        i.id as work_package_item_id, i.item_code, i.name as item_name, i.item_type,
-                       i.form_version_id, i.submission_policy,
+                       i.form_version_id, i.submission_policy, i.reminder_policy, i.report_policy,
+                       i.applicability_policy, i.execution_policy,
+                       coalesce(h.guest_room_floor_count, 1) as guest_room_floor_count,
+                       delegation.delegate_assignment_id, delegated_employee.name as delegated_employee_name,
+                       delegation.owner_resting,
                        d.id as work_package_id, d.code as work_package_code, d.name as work_package_name,
                        v.id as work_package_version_id, v.version_no,
                        (select max(w.attempt_no) from work_record w
@@ -576,6 +671,17 @@ public class WorkPackageService {
                 join employee e on e.tenant_id = a.tenant_id and e.id = a.employee_id
                 join position_definition p on p.tenant_id = a.tenant_id and p.id = a.position_id
                 join org_unit o on o.tenant_id = x.tenant_id and o.id = x.target_org_unit_id
+                left join hotel_profile h
+                  on h.tenant_id = x.tenant_id and h.org_unit_id = x.target_org_unit_id
+                left join work_expectation_delegation delegation
+                  on delegation.tenant_id = x.tenant_id
+                 and delegation.work_expectation_id = x.id and delegation.status = 'ACTIVE'
+                left join employee_position_assignment delegated_assignment
+                  on delegated_assignment.tenant_id = delegation.tenant_id
+                 and delegated_assignment.id = delegation.delegate_assignment_id
+                left join employee delegated_employee
+                  on delegated_employee.tenant_id = delegated_assignment.tenant_id
+                 and delegated_employee.id = delegated_assignment.employee_id
                 where x.tenant_id = :tenantId
                 """ + visibility + filters + " order by x.due_at, x.created_at limit 500", params);
     }
@@ -587,7 +693,12 @@ public class WorkPackageService {
         MapSqlParameterSource params = base(principal).addValue("expectationId", expectationId);
         Map<String, Object> result = new LinkedHashMap<>(jdbc.queryForMap("""
                 select x.*, i.item_code, i.name as item_name, i.item_type, i.form_version_id,
+                       i.work_window_start, i.work_window_end, i.due_local_time,
                        i.grace_minutes, i.review_mode, i.submission_policy,
+                       i.reminder_policy, i.report_policy, i.applicability_policy,
+                       i.execution_policy, coalesce(h.guest_room_floor_count, 1) as guest_room_floor_count,
+                       delegation.delegate_assignment_id, delegated_employee.name as delegated_employee_name,
+                       delegation.owner_resting,
                        d.id as work_package_id, d.code as work_package_code, d.name as work_package_name,
                        v.id as work_package_version_id, v.version_no,
                        e.name as employee_name, p.name as position_name, o.name as target_org_unit_name,
@@ -602,6 +713,17 @@ public class WorkPackageService {
                 join employee e on e.tenant_id = a.tenant_id and e.id = a.employee_id
                 join position_definition p on p.tenant_id = a.tenant_id and p.id = a.position_id
                 join org_unit o on o.tenant_id = x.tenant_id and o.id = x.target_org_unit_id
+                left join hotel_profile h
+                  on h.tenant_id = x.tenant_id and h.org_unit_id = x.target_org_unit_id
+                left join work_expectation_delegation delegation
+                  on delegation.tenant_id = x.tenant_id
+                 and delegation.work_expectation_id = x.id and delegation.status = 'ACTIVE'
+                left join employee_position_assignment delegated_assignment
+                  on delegated_assignment.tenant_id = delegation.tenant_id
+                 and delegated_assignment.id = delegation.delegate_assignment_id
+                left join employee delegated_employee
+                  on delegated_employee.tenant_id = delegated_assignment.tenant_id
+                 and delegated_employee.id = delegated_assignment.employee_id
                 where x.tenant_id = :tenantId and x.id = :expectationId
                 """, params));
         accessPolicy.requireOrgScope((UUID) result.get("target_org_unit_id"));
@@ -694,6 +816,162 @@ public class WorkPackageService {
         return response("id", expectationId, "status", "CANCELLED", "rowVersion", request.expectedVersion() + 1);
     }
 
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> delegationCandidates(UUID expectationId) {
+        TenantPrincipal principal = prepare();
+        accessPolicy.requirePermission("work-package.read");
+        ExpectationAccess expectation = expectationAccess(principal, expectationId);
+        accessPolicy.requireOrgScope(expectation.targetOrgUnitId());
+        requireDelegationOwner(principal, expectation);
+        return jdbc.queryForList("""
+                select assignment.id as assignment_id, employee.id as employee_id,
+                       employee.name as employee_name, position.name as position_name
+                from employee_position_assignment assignment
+                join employee
+                  on employee.tenant_id = assignment.tenant_id and employee.id = assignment.employee_id
+                join position_definition position
+                  on position.tenant_id = assignment.tenant_id and position.id = assignment.position_id
+                join user_account account
+                  on account.tenant_id = employee.tenant_id and account.id = employee.account_id
+                where assignment.tenant_id = :tenantId
+                  and assignment.org_unit_id = :orgUnitId
+                  and assignment.id <> :ownerAssignmentId
+                  and assignment.status = 'ACTIVE'
+                  and assignment.valid_from <= :businessDate
+                  and (assignment.valid_to is null or assignment.valid_to >= :businessDate)
+                  and employee.employment_status = 'ACTIVE' and employee.deleted_at is null
+                  and account.status = 'ACTIVE'
+                order by employee.name, position.name, assignment.id
+                """, base(principal).addValue("orgUnitId", expectation.targetOrgUnitId())
+                .addValue("ownerAssignmentId", expectation.assignmentId())
+                .addValue("businessDate", expectation.businessDate()));
+    }
+
+    @Transactional
+    public Map<String, Object> delegateExpectation(
+            UUID expectationId,
+            WorkPackageModels.DelegateExpectation request
+    ) {
+        TenantPrincipal principal = prepare();
+        accessPolicy.requirePermission("work-record.submit");
+        ExpectationAccess expectation = expectationAccess(principal, expectationId);
+        accessPolicy.requireOrgScope(expectation.targetOrgUnitId());
+        requireDelegationOwner(principal, expectation);
+        if (!expectation.delegationAllowed()) {
+            throw new IllegalArgumentException("该工作事项不允许转交");
+        }
+        if (!Set.of("PLANNED", "AVAILABLE", "IN_PROGRESS", "MISSED").contains(expectation.status())) {
+            throw new IllegalArgumentException("该工作事项已提交或已结束，不能转交");
+        }
+        if (expectation.rowVersion() != request.expectedVersion()) {
+            throw new IllegalArgumentException("工作事项版本已变化，请刷新后重试");
+        }
+        Integer candidate = jdbc.queryForObject("""
+                select count(*)
+                from employee_position_assignment assignment
+                join employee
+                  on employee.tenant_id = assignment.tenant_id and employee.id = assignment.employee_id
+                join user_account account
+                  on account.tenant_id = employee.tenant_id and account.id = employee.account_id
+                where assignment.tenant_id = :tenantId and assignment.id = :delegateAssignmentId
+                  and assignment.org_unit_id = :orgUnitId and assignment.status = 'ACTIVE'
+                  and assignment.valid_from <= :businessDate
+                  and (assignment.valid_to is null or assignment.valid_to >= :businessDate)
+                  and employee.employment_status = 'ACTIVE' and employee.deleted_at is null
+                  and account.status = 'ACTIVE'
+                """, base(principal).addValue("delegateAssignmentId", request.delegateAssignmentId())
+                .addValue("orgUnitId", expectation.targetOrgUnitId())
+                .addValue("businessDate", expectation.businessDate()), Integer.class);
+        if (candidate == null || candidate != 1) {
+            throw new IllegalArgumentException("受托人必须是同店在职且任职有效的员工");
+        }
+        jdbc.update("""
+                update work_expectation_delegation
+                set status = 'REVOKED', revoked_by_account_id = :actorId,
+                    revoked_at = now(), updated_at = now()
+                where tenant_id = :tenantId and work_expectation_id = :expectationId
+                  and status = 'ACTIVE'
+                """, base(principal).addValue("expectationId", expectationId)
+                .addValue("actorId", principal.actorId()));
+        UUID delegationId = UUID.randomUUID();
+        jdbc.update("""
+                insert into work_expectation_delegation
+                    (id, tenant_id, work_expectation_id, delegate_assignment_id,
+                     delegated_by_account_id, owner_resting, reason)
+                values (:id, :tenantId, :expectationId, :delegateAssignmentId,
+                        :actorId, :ownerResting, :reason)
+                """, base(principal).addValue("id", delegationId)
+                .addValue("expectationId", expectationId)
+                .addValue("delegateAssignmentId", request.delegateAssignmentId())
+                .addValue("actorId", principal.actorId())
+                .addValue("ownerResting", Boolean.TRUE.equals(request.ownerResting()))
+                .addValue("reason", trimToNull(request.reason())));
+        jdbc.update("""
+                update work_expectation set row_version = row_version + 1, updated_at = now()
+                where tenant_id = :tenantId and id = :expectationId
+                """, base(principal).addValue("expectationId", expectationId));
+        UUID delegateAccountId = jdbc.queryForObject("""
+                select employee.account_id
+                from employee_position_assignment assignment
+                join employee on employee.tenant_id = assignment.tenant_id
+                             and employee.id = assignment.employee_id
+                where assignment.tenant_id = :tenantId and assignment.id = :delegateAssignmentId
+                """, base(principal).addValue("delegateAssignmentId", request.delegateAssignmentId()), UUID.class);
+        if (delegateAccountId != null) {
+            UUID notificationId = UUID.randomUUID();
+            jdbc.update("""
+                    insert into notification
+                        (id, tenant_id, recipient_account_id, recipient_assignment_id,
+                         notification_type, title, content, source_type, source_id, idempotency_key)
+                    values (:id, :tenantId, :accountId, :assignmentId,
+                            'WORK_EXPECTATION_DELEGATED', '工作事项已转交给你',
+                            '请进入事项按模板完成并上传证据。', 'WORK_EXPECTATION', :expectationId,
+                            :idempotencyKey)
+                    on conflict (tenant_id, recipient_account_id, idempotency_key) do nothing
+                    """, base(principal).addValue("id", notificationId)
+                    .addValue("accountId", delegateAccountId)
+                    .addValue("assignmentId", request.delegateAssignmentId())
+                    .addValue("expectationId", expectationId)
+                    .addValue("idempotencyKey", "work-expectation:delegated:" + expectationId + ":" + delegationId));
+        }
+        auditWriter.record("WORK_EXPECTATION_DELEGATED", "WORK_EXPECTATION", expectationId,
+                "{\"delegationId\":\"" + delegationId + "\",\"delegateAssignmentId\":\""
+                        + request.delegateAssignmentId() + "\",\"ownerResting\":"
+                        + Boolean.TRUE.equals(request.ownerResting()) + "}");
+        return response("id", expectationId, "delegationId", delegationId,
+                "delegateAssignmentId", request.delegateAssignmentId(),
+                "ownerResting", Boolean.TRUE.equals(request.ownerResting()),
+                "rowVersion", request.expectedVersion() + 1);
+    }
+
+    @Transactional
+    public Map<String, Object> revokeDelegation(UUID expectationId, long expectedVersion) {
+        TenantPrincipal principal = prepare();
+        accessPolicy.requirePermission("work-record.submit");
+        ExpectationAccess expectation = expectationAccess(principal, expectationId);
+        accessPolicy.requireOrgScope(expectation.targetOrgUnitId());
+        requireDelegationOwner(principal, expectation);
+        if (expectation.rowVersion() != expectedVersion) {
+            throw new IllegalArgumentException("工作事项版本已变化，请刷新后重试");
+        }
+        int changed = jdbc.update("""
+                update work_expectation_delegation
+                set status = 'REVOKED', revoked_by_account_id = :actorId,
+                    revoked_at = now(), updated_at = now()
+                where tenant_id = :tenantId and work_expectation_id = :expectationId
+                  and status = 'ACTIVE'
+                """, base(principal).addValue("expectationId", expectationId)
+                .addValue("actorId", principal.actorId()));
+        if (changed != 1) throw new IllegalArgumentException("该事项当前没有有效转交");
+        jdbc.update("""
+                update work_expectation set row_version = row_version + 1, updated_at = now()
+                where tenant_id = :tenantId and id = :expectationId
+                """, base(principal).addValue("expectationId", expectationId));
+        auditWriter.record("WORK_EXPECTATION_DELEGATION_REVOKED", "WORK_EXPECTATION", expectationId,
+                "{\"expectedVersion\":" + expectedVersion + "}");
+        return response("id", expectationId, "status", "REVOKED", "rowVersion", expectedVersion + 1);
+    }
+
     private Map<String, Object> generateExpectationsInternal(
             TenantPrincipal principal,
             WorkPackageModels.GenerateExpectations request
@@ -737,6 +1015,8 @@ public class WorkPackageService {
                 from work_package_allocation a
                 join work_package_version v on v.tenant_id = a.tenant_id and v.id = a.work_package_version_id
                 join work_package_item i on i.tenant_id = v.tenant_id and i.work_package_version_id = v.id
+                left join hotel_profile h
+                  on h.tenant_id = a.tenant_id and h.org_unit_id = a.target_org_unit_id
                 where a.tenant_id = :tenantId and a.position_assignment_id = :assignmentId
                   and a.target_org_unit_id = :targetOrgUnitId and a.status = 'ACTIVE'
                   and a.valid_from <= :businessDate and (a.valid_to is null or a.valid_to >= :businessDate)
@@ -744,6 +1024,10 @@ public class WorkPackageService {
                   and v.effective_from::date <= :businessDate
                   and (v.effective_to is null or v.effective_to::date >= :businessDate)
                   and i.period_type = :periodType
+                  and (
+                    not coalesce((i.applicability_policy ->> 'requiresBreakfastService')::boolean, false)
+                    or coalesce(h.breakfast_service_enabled, false)
+                  )
                 order by i.sort_order, i.item_code
                 """, base(principal)
                 .addValue("assignmentId", request.positionAssignmentId())
@@ -894,13 +1178,15 @@ public class WorkPackageService {
                      form_version_id, sort_order, required, period_type, timezone_mode, fixed_timezone,
                      work_window_start, work_window_end, due_local_time, grace_minutes, weekdays,
                      day_of_month, holiday_policy, waiver_allowed, target_granularity, review_mode,
-                     submission_policy)
+                     submission_policy, reminder_policy, report_policy, applicability_policy, execution_policy)
                 values
                     (:id, :tenantId, :versionId, :itemCode, :name, :description, :itemType,
                      :formVersionId, :sortOrder, :required, :periodType, :timezoneMode, :fixedTimezone,
                      :workWindowStart, :workWindowEnd, :dueLocalTime, :graceMinutes,
                      cast(:weekdays as smallint[]), :dayOfMonth, :holidayPolicy, :waiverAllowed,
-                     :targetGranularity, :reviewMode, cast(:submissionPolicy as jsonb))
+                     :targetGranularity, :reviewMode, cast(:submissionPolicy as jsonb),
+                     cast(:reminderPolicy as jsonb), cast(:reportPolicy as jsonb),
+                     cast(:applicabilityPolicy as jsonb), cast(:executionPolicy as jsonb))
                 """, base(principal)
                 .addValue("id", itemId)
                 .addValue("versionId", versionId)
@@ -924,7 +1210,11 @@ public class WorkPackageService {
                 .addValue("waiverAllowed", item.waiverAllowed() != null && item.waiverAllowed())
                 .addValue("targetGranularity", defaultUpper(item.targetGranularity(), "ASSIGNMENT_ORG"))
                 .addValue("reviewMode", defaultUpper(item.reviewMode(), "MANUAL"))
-                .addValue("submissionPolicy", normalizeSubmissionPolicy(item.submissionPolicy())));
+                .addValue("submissionPolicy", normalizeSubmissionPolicy(item.submissionPolicy()))
+                .addValue("reminderPolicy", normalizeObjectPolicy(item.reminderPolicy(), "工作提醒策略"))
+                .addValue("reportPolicy", normalizeObjectPolicy(item.reportPolicy(), "日报汇总策略"))
+                .addValue("applicabilityPolicy", normalizeObjectPolicy(item.applicabilityPolicy(), "适用规则"))
+                .addValue("executionPolicy", normalizeObjectPolicy(item.executionPolicy(), "执行规则")));
 
         for (WorkPackageModels.StandardLink standard : nullSafe(item.standards())) {
             requireOwned("standard_version", principal, standard.standardVersionId());
@@ -1106,14 +1396,24 @@ public class WorkPackageService {
             policy.setAll((ObjectNode) configured);
         }
         int maxAttachments = policy.path("maxAttachments").asInt(10);
-        if (maxAttachments < 0 || maxAttachments > 10) {
-            throw new IllegalArgumentException("单条工作记录附件数量必须在0到10之间");
+        if (maxAttachments < 0 || maxAttachments > 200) {
+            throw new IllegalArgumentException("单条工作记录附件数量必须在0到200之间");
         }
         long maxBytes = policy.path("maxFileSizeBytes").asLong(20L * 1024 * 1024);
         if (maxBytes < 1 || maxBytes > 20L * 1024 * 1024) {
             throw new IllegalArgumentException("单个附件大小上限不能超过20MB");
         }
         return policy.toString();
+    }
+
+    private String normalizeObjectPolicy(JsonNode configured, String label) {
+        if (configured == null || configured.isNull()) {
+            return "{}";
+        }
+        if (!configured.isObject()) {
+            throw new IllegalArgumentException(label + "必须是JSON对象");
+        }
+        return configured.toString();
     }
 
     private String contentSnapshot(TenantPrincipal principal, UUID versionId) {
@@ -1239,14 +1539,27 @@ public class WorkPackageService {
 
     private ExpectationAccess expectationAccess(TenantPrincipal principal, UUID expectationId) {
         return jdbc.queryForObject("""
-                select target_org_unit_id, position_assignment_id, waiver_allowed
-                from work_expectation
-                where tenant_id = :tenantId and id = :expectationId
+                select x.target_org_unit_id, x.position_assignment_id, x.business_date,
+                       x.status, x.row_version, x.waiver_allowed,
+                       coalesce((i.execution_policy ->> 'delegationAllowed')::boolean, false) as delegation_allowed
+                from work_expectation x
+                join work_package_item i on i.tenant_id = x.tenant_id and i.id = x.work_package_item_id
+                where x.tenant_id = :tenantId and x.id = :expectationId
                 """, base(principal).addValue("expectationId", expectationId),
                 (rs, rowNum) -> new ExpectationAccess(
                         rs.getObject("target_org_unit_id", UUID.class),
                         rs.getObject("position_assignment_id", UUID.class),
-                        rs.getBoolean("waiver_allowed")));
+                        rs.getObject("business_date", LocalDate.class),
+                        rs.getString("status"),
+                        rs.getLong("row_version"),
+                        rs.getBoolean("waiver_allowed"),
+                        rs.getBoolean("delegation_allowed")));
+    }
+
+    private void requireDelegationOwner(TenantPrincipal principal, ExpectationAccess expectation) {
+        if (!principal.assignmentIds().contains(expectation.assignmentId())) {
+            throw new AccessDeniedException("仅事项所属店长可以转交或撤销转交");
+        }
     }
 
     private String orgVisibility(TenantPrincipal principal, MapSqlParameterSource params, String orgExpression) {
@@ -1359,6 +1672,9 @@ public class WorkPackageService {
     ) {
     }
 
+    private record AllocationTarget(UUID assignmentId, UUID targetOrgUnitId) {
+    }
+
     private record DutyWindow(
             OffsetDateTime start,
             OffsetDateTime end,
@@ -1370,6 +1686,14 @@ public class WorkPackageService {
     ) {
     }
 
-    private record ExpectationAccess(UUID targetOrgUnitId, UUID assignmentId, boolean waiverAllowed) {
+    private record ExpectationAccess(
+            UUID targetOrgUnitId,
+            UUID assignmentId,
+            LocalDate businessDate,
+            String status,
+            long rowVersion,
+            boolean waiverAllowed,
+            boolean delegationAllowed
+    ) {
     }
 }

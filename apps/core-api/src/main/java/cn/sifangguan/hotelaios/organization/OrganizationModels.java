@@ -20,8 +20,17 @@ public final class OrganizationModels {
             String propertyCode,
             String city,
             Integer roomCount,
-            LocalDate openingDate
+            LocalDate openingDate,
+            Boolean breakfastServiceEnabled,
+            Integer guestRoomFloorCount
     ) {
+        public CreateOrgUnit(
+                UUID parentId, String code, String name, String unitType, Integer sortOrder,
+                String propertyCode, String city, Integer roomCount, LocalDate openingDate
+        ) {
+            this(parentId, code, name, unitType, sortOrder, propertyCode, city, roomCount,
+                    openingDate, null, null);
+        }
     }
 
     public record UpdateOrgUnit(
@@ -32,8 +41,17 @@ public final class OrganizationModels {
             String propertyCode,
             String city,
             Integer roomCount,
-            LocalDate openingDate
+            LocalDate openingDate,
+            Boolean breakfastServiceEnabled,
+            Integer guestRoomFloorCount
     ) {
+        public UpdateOrgUnit(
+                String code, String name, Integer sortOrder, String status,
+                String propertyCode, String city, Integer roomCount, LocalDate openingDate
+        ) {
+            this(code, name, sortOrder, status, propertyCode, city, roomCount,
+                    openingDate, null, null);
+        }
     }
 
     public record CreatePosition(

@@ -104,7 +104,19 @@ class DailyReportDispatchIntegrationTest {
                         -> 'preDueReminderMinutes' = '[30]'::jsonb
                   and revision.payload_snapshot -> 'deliveryPolicy'
                         -> 'overdueReminderMinutes' = '[0, 30]'::jsonb
-                """, TENANT, BUSINESS_DATE)).isEqualTo(6);
+                """, TENANT, BUSINESS_DATE)).isEqualTo(5);
+        assertThat(count("""
+                select count(*)
+                from daily_report report
+                join daily_report_revision revision
+                  on revision.tenant_id = report.tenant_id
+                 and revision.id = report.current_revision_id
+                where report.tenant_id = ? and report.business_date = ?
+                  and revision.payload_snapshot -> 'deliveryPolicy'
+                        -> 'preDueReminderMinutes' = '[180, 60]'::jsonb
+                  and revision.payload_snapshot -> 'deliveryPolicy'
+                        -> 'overdueReminderMinutes' = '[60, 65]'::jsonb
+                """, TENANT, BUSINESS_DATE)).isEqualTo(1);
         assertThat(count("""
                 select count(*) from notification notification
                 join daily_report report

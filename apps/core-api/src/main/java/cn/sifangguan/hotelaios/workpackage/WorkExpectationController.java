@@ -79,4 +79,25 @@ public class WorkExpectationController {
     ) {
         return service.cancelExpectation(expectationId, request);
     }
+
+    @GetMapping("/api/v1/work-expectations/{expectationId}/delegation-candidates")
+    public List<Map<String, Object>> delegationCandidates(@PathVariable UUID expectationId) {
+        return service.delegationCandidates(expectationId);
+    }
+
+    @PostMapping("/api/v1/work-expectations/{expectationId}/delegate")
+    public Map<String, Object> delegate(
+            @PathVariable UUID expectationId,
+            @Valid @RequestBody WorkPackageModels.DelegateExpectation request
+    ) {
+        return service.delegateExpectation(expectationId, request);
+    }
+
+    @DeleteMapping("/api/v1/work-expectations/{expectationId}/delegation")
+    public Map<String, Object> revokeDelegation(
+            @PathVariable UUID expectationId,
+            @RequestParam long expectedVersion
+    ) {
+        return service.revokeDelegation(expectationId, expectedVersion);
+    }
 }
