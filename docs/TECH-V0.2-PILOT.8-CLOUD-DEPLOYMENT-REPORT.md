@@ -53,3 +53,11 @@ Browser插件不可用，且Playwright自带Chromium未安装；遵循前端测�
 - 区域经理继续`DEFERRED / NOT IN USE`。
 - 批次C周/月计划、批次D提醒Worker和真实人员Pilot数据包尚未实现或启用。
 - 本次为内部Pilot增量部署，不等于TECH-V0.2正式发行，不解除既有正式发布门禁。
+
+## 5. 2026-09-13 企业微信一键邀请增量发布
+
+- GitHub `main`功能提交：`7909a1468a4510e7467a08ee98f190410bdf2a9b`。
+- 发布版本：`20260913-pilot8-7909a14`；后端SHA-256为`b0dc7c24b3da9353cfc912e970125d4ac57545eac60238de177b2563a6538121`，Web `index.html` SHA-256为`bebc0ea73fa3c960cd0daae9ec17648c1e2e00237708fdc8436f20f887119e9b`，公网回读一致。
+- 发布门禁：Web 70项契约测试、Pilot生产构建、企微后端专项32项及后端全量242项通过（0失败、0错误、3跳过）；空库Flyway V1→V45通过。
+- 云端先完成加密PostgreSQL备份，再由Flyway V44迁移至V45；Core API与Caddy均为active，JAR/数据库均为45且失败迁移为0，部署后Core API warning为0。
+- 公网首页返回200，未授权`/api/v1/iam/me`返回401，公开静态资源已回读到“一键邀请”。未使用真实员工资料执行手机号注册或审批；本增量仍属于内部Pilot，不改变TECH-V0.2正式NO-GO边界。

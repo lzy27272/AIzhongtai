@@ -17,7 +17,7 @@
 | 产品蓝图 | PRODUCT-V1.4 | PRODUCT-V1.4 | 产品为什么这样设计、管理链和领域边界 |
 | 技术发行 | TECH-V0.1 | TECH-V0.1 | 当前真正完成并验收的系统能力 |
 | API主版本 | API-V1 | /api/v1 | HTTP向后兼容边界 |
-| 数据库迁移 | DB-V4 | 已发布DB-V4；云端内部Pilot运行Flyway V39 | 正式发布基线与当前Pilot迁移范围 |
+| 数据库迁移 | DB-V4 | 已发布DB-V4；云端内部Pilot运行Flyway V45 | 正式发布基线与当前Pilot迁移范围 |
 | OpenAPI契约 | 0.1.0-sprint1 | 已发布0.1.0-sprint1；云端Pilot运行0.2.5-pilot.8 | 当前已发布与内部Pilot接口制品 |
 
 禁止只写“V1.3”而不说明是PRODUCT、TECH、API还是数据库版本。
@@ -29,12 +29,14 @@
 #### CHG-20260913-055：统一企业微信一键邀请并增加手机号注册判重
 
 - 日期：2026-09-13。
-- 状态：Unreleased / CODE COMPLETE / NOT DEPLOYED。
+- 状态：Unreleased / CODE COMPLETE / DEPLOYED TO INTERNAL PILOT。
 - 前端：企业微信人员绑定页取消“已有中台账号绑定”和“无中台账号注册”两个顶部入口，统一为“一键邀请”；员工完成企微身份验证后必须填写本人手机号。
 - 服务端：手机号规范化为中国大陆11位号码，在提交审核前同时检查已有中台账号和其他未完结入职申请；命中时返回固定提示“手机号已注册”，不凭手机号自动接管既有账号。
 - 数据库：新增Flyway V45，保存待审核手机号，并为中台账号手机号和开放入职申请手机号增加租户内唯一索引；审批通过后手机号同步写入账号与员工档案。
 - 安全与兼容：手机号不写入日志、通知或审计；V45以前已进入审核的历史申请仍可继续审批。
-- 验证：Web 70 项契约测试、TypeScript/Vite 生产构建、Core API 企微专项 32 项及全量 242 项测试通过（0 失败、0 错误、3 项跳过）；Flyway V1→V45 完整迁移通过。未提交Git、未合并主线、未部署云端。
+- 验证：Web 70 项契约测试、TypeScript/Vite Pilot生产构建、Core API 企微专项 32 项及全量 242 项测试通过（0失败、0错误、3项跳过）；Flyway V1→V45完整迁移通过。
+- 发布：功能提交`7909a1468a4510e7467a08ee98f190410bdf2a9b`已快进推送至GitHub `main`；腾讯云在加密备份成功后由Flyway V44升级至V45并切换到`20260913-pilot8-7909a14`，Core API与Caddy均为active，健康门禁为`flyway_jar=45 flyway_db=45 failed_migrations=0`。
+- 公网：`https://www.sfgzt.cn`返回200，未授权`/api/v1/iam/me`返回401，公网首页哈希与服务器发布制品一致，新版“一键邀请”文本已回读；部署后Core API warning为0。未使用真实员工资料执行注册或审批。
 
 #### CHG-20260912-054：部署TECH-V0.2-PILOT.8批次A/B到云端内部Pilot
 
