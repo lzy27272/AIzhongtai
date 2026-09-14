@@ -35,13 +35,17 @@ AUTOMATION_WORKER_ENABLED=false
 WORK_EXPECTATION_SLA_SCHEDULER_ENABLED=false
 ATTACHMENT_STORAGE_ROOT=/var/lib/hotel-ai-os/attachments
 ATTACHMENT_SCAN_COMMAND_PATH=/usr/bin/clamdscan
-ATTACHMENT_SCAN_COMMAND_ARGUMENTS=--no-summary|--fdpass|{file}
+ATTACHMENT_SCAN_COMMAND_ARGUMENTS=--no-summary|--stream|{file}
 ATTACHMENT_SCAN_ALLOW_SANITIZED_IMAGE_FALLBACK=false
 WEB_ALLOWED_ORIGINS=https://www.sfgzt.cn
 WECOM_ENABLED=false
 WECOM_WORKER_ENABLED=false
 WECOM_BOT_ACTIONS_ENABLED=false
 ```
+
+`clamdscan` must use `--stream` here because Core API runs in a private systemd
+mount namespace. The daemon's `StreamMaxLength` must stay above
+`ATTACHMENT_MAX_SIZE_BYTES` (the production defaults are 25 MiB and 20 MiB).
 
 When `WECOM_ENABLED=true`, manual employee invitations and onboarding review
 also require `WECOM_DIRECTORY_ENCRYPTION_KEY` (a Base64-encoded 32-byte key)
