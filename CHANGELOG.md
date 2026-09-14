@@ -29,11 +29,12 @@
 #### CHG-20260914-061：修复企业微信工作台入口被识别为 callback 下载文件
 
 - 日期：2026-09-14。
-- 状态：Unreleased / CODE COMPLETE / NOT DEPLOYED。
+- 状态：Unreleased / CODE COMPLETE / DEPLOYED TO INTERNAL PILOT。
 - 根因：企业微信工作台应用主页直接打开通用OAuth回调地址，但首次进入不包含供应商返回的`code/state`参数；后端原先返回非HTML错误响应，iOS企业微信因此把末级路径`callback`识别为待下载文件。
 - 服务端：仅当回调地址同时缺少`code`和`state`时，自动创建新的工作台OAuth状态及浏览器校验Cookie并跳转企业微信授权；正常授权回调和员工入职绑定回调继续按原流程处理。
 - 安全：只缺一个参数、缺失或冲突的校验Cookie、伪造状态等请求仍关闭式拒绝；重启授权时同时清理可能残留的入职绑定校验Cookie，响应继续使用Secure、HttpOnly、SameSite=Lax及no-store策略。
 - 验证：控制器专项5项及后端全量253项通过（0失败、0错误、3项按环境跳过），覆盖无参数入口自动授权、旧绑定Cookie清理、无下载响应头、单参数关闭式拒绝、正常工作台回调和入职绑定回调；Flyway V1→V49完整迁移通过。
+- 部署：功能提交`aa90f09b62c282c32490c6670de14862ad46e8d0`以不可变版本`20260914-pilot8-aa90f09`部署至腾讯云内部Pilot；部署前加密备份、制品敏感信息扫描和SHA-256校验通过，Core API/Caddy均为active，Flyway JAR/数据库均为V49且失败迁移0。线上无参数回调返回302企业微信OAuth跳转、无`Content-Disposition`且响应体为空；单参数异常请求仍返回401。Browser实页到达企业微信“请在企业微信客户端打开链接”授权提示，未再进入callback文件下载页。
 
 #### CHG-20260914-060：企业微信多人复用邀请与集团总部入职申请
 

@@ -90,3 +90,12 @@ Browser插件不可用，且Playwright自带Chromium未安装；遵循前端测�
 - 部署后Core API与Caddy均为`active`，健康状态为`UP`；公网首页返回200，未授权`/api/v1/iam/me`返回401，公开静态资源已回读到“同一二维码在有效期内可供多名员工分别使用”，启动后的warning/error/exception为0。
 - 验证：后端全量251项（0失败、0错误、3跳过）、企微入职专项35项、Web全量79项和专项12项、TypeScript、Pilot生产构建及Flyway V1→V49通过；桌面及390×844手机真实页面闭环11项通过，控制台错误、页面异常与请求失败均为0。5个发布制品敏感信息扫描0命中、0错误。
 - 未使用真实员工资料执行线上注册或审批；本次仍为内部Pilot增量发布，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态。
+
+## 9. 2026-09-14 企业微信工作台 callback 下载页兼容修复
+
+- 功能提交为`aa90f09b62c282c32490c6670de14862ad46e8d0`。根因是企业微信工作台应用主页直接指向OAuth回调地址，首次打开不携带`code/state`；原401非HTML响应被iOS企业微信识别为名为`callback`的下载文件。修复后仅在两个参数同时缺失时安全启动工作台OAuth；单参数缺失、Cookie冲突和伪造状态仍关闭式拒绝。
+- 云端不可变发布版本为`20260914-pilot8-aa90f09`。后端JAR SHA-256为`8a2164010e28e45c525b68e6dcd1a38781a08db9addd00704a785f9dd6e7dc5f`；Web沿用上一稳定包，ZIP SHA-256为`304717be3bf29f6c7b14f6d7ef8c1bc3e2183e9e8585ff00cd0add0e87f2e42a`，`index.html` SHA-256为`a7e4ce8e71dd34677b88b665aec64442e9d09d8b31edd447ed9b39c62c0e14f7`。
+- 部署前生成并验证加密PostgreSQL备份`hotel_ai_os-auto-20260914T135543+0800.dump.enc`；Flyway JAR/数据库均为V49，失败迁移0。Core API与Caddy均为`active`，健康状态为`UP`，部署启动窗口内warning/error/exception均为0。
+- 公网响应验证：无参数`/api/v1/integrations/wecom/oauth/callback`返回302并跳转企业微信OAuth，设置新的工作台校验Cookie、清除残留入职绑定Cookie、使用no-store策略，无`Content-Disposition`且响应体为空；只提供`code`的异常请求返回401且不跳转。
+- Browser实页验证到达企业微信授权域名并显示“请在企业微信客户端打开链接”，未再出现callback文件下载页。外部Browser没有真实企业微信客户端登录态，因此最终账号交换与工作台落地仍需在用户企业微信客户端复验。
+- 控制器专项5项、后端全量253项（0失败、0错误、3跳过）和Flyway V1→V49通过；5个发布制品扫描63个归档、23728个条目，敏感信息0命中、0错误。本次仍为内部Pilot增量发布，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态。
