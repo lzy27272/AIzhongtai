@@ -95,6 +95,65 @@ class StoreManagerDailyClosedLoopIntegrationTest {
     }
 
     @Test
+    void newlyCreatedHotelStoreManagerReceivesReportingLineAndDailyWorkPackage() {
+        UUID accountId = UUID.randomUUID();
+        UUID employeeId = UUID.randomUUID();
+        UUID assignmentId = UUID.randomUUID();
+        String loginName = "store-manager-provisioning-" + accountId;
+
+        jdbc.update("""
+                insert into user_account
+                    (id, tenant_id, login_name, display_name, status)
+                values (?, ?::uuid, ?, '新店长自动配置测试', 'ACTIVE')
+                """, accountId, TENANT, loginName);
+        jdbc.update("""
+                insert into employee
+                    (id, tenant_id, account_id, employee_no, name, employment_status, hired_on)
+                values (?, ?::uuid, ?, ?, '新店长自动配置测试', 'ACTIVE', current_date)
+                """, employeeId, TENANT, accountId, "AUTO-GM-" + employeeId);
+        jdbc.update("""
+                insert into employee_position_assignment
+                    (id, tenant_id, employee_id, org_unit_id, position_id,
+                     is_primary, assignment_type, valid_from, status)
+                values (?, ?::uuid, ?, ?::uuid, '14000000-0000-0000-0000-000000000004'::uuid,
+                        true, 'PERMANENT', current_date, 'ACTIVE')
+                """, assignmentId, TENANT, employeeId, HOTEL);
+
+        assertThat(jdbc.queryForObject("""
+                select count(*)
+                from employee_position_assignment store_manager
+                join employee_position_assignment manager
+                  on manager.tenant_id = store_manager.tenant_id
+                 and manager.id = store_manager.manager_assignment_id
+                join position_definition manager_position
+                  on manager_position.tenant_id = manager.tenant_id
+                 and manager_position.id = manager.position_id
+                where store_manager.tenant_id = ?::uuid
+                  and store_manager.id = ?
+                  and manager_position.code = 'GROUP_GENERAL_MANAGER'
+                """, Integer.class, TENANT, assignmentId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                select count(*)
+                from work_package_allocation
+                where tenant_id = ?::uuid
+                  and work_package_version_id = ?::uuid
+                  and position_assignment_id = ?
+                  and target_org_unit_id = ?::uuid
+                  and allocation_source = 'SYSTEM'
+                  and status = 'ACTIVE'
+                """, Integer.class, TENANT, PACKAGE_VERSION, assignmentId, HOTEL)).isEqualTo(1);
+
+        slaService.processTenantAsSystem(UUID.fromString(TENANT), 100, UUID.randomUUID());
+        assertThat(jdbc.queryForObject("""
+                select count(*)
+                from work_expectation
+                where tenant_id = ?::uuid
+                  and position_assignment_id = ?
+                  and business_date = current_date
+                """, Integer.class, TENANT, assignmentId)).isEqualTo(7);
+    }
+
+    @Test
     void storeManagerRoutineClosesFromScheduleThroughEvidenceReviewAndDailyReport() throws Exception {
         assertPublishedTemplateContract();
 
