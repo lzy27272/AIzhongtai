@@ -4,7 +4,7 @@
 |---|---|
 | 产品/设计基线 | PRODUCT-V1.4 / DESIGN-1.1 / TECH-DESIGN-1.0 |
 | 部署范围 | 批次A身份与V39底座、批次B董事长受限交办；不含批次C/D |
-| 目标 | 腾讯云Ubuntu / `https://www.sfgzt.cn` / GitHub `lzy27272/codex:main` |
+| 目标 | 腾讯云Ubuntu / `https://www.sfgzt.cn` / GitHub `lzy27272/AIzhongtai:main` |
 | 状态 | DEPLOYED / HEALTHY / FEATURES OFF / FORMAL TECH-V0.2 NO-GO |
 | 日期 | 2026-09-12 |
 
@@ -61,3 +61,12 @@ Browser插件不可用，且Playwright自带Chromium未安装；遵循前端测�
 - 发布门禁：Web 70项契约测试、Pilot生产构建、企微后端专项32项及后端全量242项通过（0失败、0错误、3跳过）；空库Flyway V1→V45通过。
 - 云端先完成加密PostgreSQL备份，再由Flyway V44迁移至V45；Core API与Caddy均为active，JAR/数据库均为45且失败迁移为0，部署后Core API warning为0。
 - 公网首页返回200，未授权`/api/v1/iam/me`返回401，公开静态资源已回读到“一键邀请”。未使用真实员工资料执行手机号注册或审批；本增量仍属于内部Pilot，不改变TECH-V0.2正式NO-GO边界。
+
+## 6. 2026-09-14 全岗位工作模板配置增量发布
+
+- 功能提交为`21f874c2023f6ffa0e9d89a7018703defbbcb0dc`；为保留新仓库既有初始化历史，发布树通过无文件改动的`131568a330b60bb1f570531c61b34db00b096f7f`合并提交接入`lzy27272/AIzhongtai:main`，本地默认`origin`同步迁移至该仓库。
+- 云端不可变发布版本为`20260914-pilot8-131568a`。后端JAR SHA-256为`f91c8760a5ec3e444580ae0e457928e2bc5eb5546899089db1fdc92f9b699468`；Web `index.html` SHA-256为`32b89783528b61c13aeab42cd6bb52ea599a8caaa35818cfa2e4b5fa95a41e80`，公网回读哈希一致。
+- 部署前生成加密PostgreSQL备份`hotel_ai_os-auto-20260914T112332+0800.dump.enc`，密文及校验文件均为`root:root:0600`，SHA-256校验通过。Flyway由V45迁移至V48，JAR/数据库版本一致，失败迁移为0。
+- Core API与Caddy均为`active`，健康状态为`UP`；公网首页返回200，未授权`/api/v1/iam/me`和`/api/v1/work-packages`均返回401，部署后5分钟Core API warning/error为0。
+- 公网静态资源已回读到“所有岗位通用工作模板配置”；本次5个发布制品扫描63个归档、23726个条目，敏感信息0命中、0错误。
+- 本次仍为内部Pilot增量发布，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态，也不自动启用尚未审批的功能开关或真实人员映射。
