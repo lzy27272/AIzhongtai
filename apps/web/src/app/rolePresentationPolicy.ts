@@ -31,7 +31,11 @@ export type MobilePresentationTarget =
   | 'daily-operations'
   | 'hotel-dashboard'
   | 'operations-dashboard'
+  | 'work-packages'
+  | 'rules'
   | 'organization'
+  | 'wecom-onboarding'
+  | 'wecom-bindings'
   | 'kpi-center'
   | 'investments'
   | 'notifications'
@@ -47,28 +51,42 @@ export type RolePresentationPolicy = Readonly<{
 }>
 
 const tabs = (
-  primaryLabel: string,
-  primaryTarget: MobilePresentationTarget,
   domainLabel: string,
   domainTarget: MobilePresentationTarget,
-  secondaryLabel = '待办',
-  secondaryTarget: MobilePresentationTarget = 'tasks',
+  reportLabel = '日报',
+  reportTarget: MobilePresentationTarget = 'daily-reports-my',
 ): readonly MobilePresentationTab[] => Object.freeze([
-  Object.freeze({ slot: 'primary', label: primaryLabel, target: primaryTarget }),
-  Object.freeze({ slot: 'secondary', label: secondaryLabel, target: secondaryTarget }),
+  Object.freeze({ slot: 'primary', label: '工作台', target: 'workbench' }),
+  Object.freeze({ slot: 'secondary', label: reportLabel, target: reportTarget }),
   Object.freeze({ slot: 'domain', label: domainLabel, target: domainTarget }),
-  Object.freeze({ slot: 'notifications', label: '消息', target: 'notifications' }),
+  Object.freeze({ slot: 'notifications', label: 'KPI', target: 'kpi-center' }),
   Object.freeze({ slot: 'profile', label: '我的', target: 'all-functions' }),
 ])
 
 const modules = (...ids: AppRouteId[]): readonly AppRouteId[] => Object.freeze(ids)
 
 const chairmanTabs = (): readonly MobilePresentationTab[] => Object.freeze([
-  Object.freeze({ slot: 'primary', label: '集团', target: 'workbench' }),
-  Object.freeze({ slot: 'secondary', label: '任务', target: 'tasks' }),
-  Object.freeze({ slot: 'domain', label: '经营', target: 'daily-operations' }),
-  Object.freeze({ slot: 'notifications', label: '消息', target: 'notifications' }),
+  Object.freeze({ slot: 'primary', label: '工作台', target: 'workbench' }),
+  Object.freeze({ slot: 'secondary', label: '日报', target: 'daily-reports-my' }),
+  Object.freeze({ slot: 'domain', label: '日运营', target: 'daily-operations' }),
+  Object.freeze({ slot: 'notifications', label: 'KPI', target: 'kpi-center' }),
   Object.freeze({ slot: 'profile', label: '我的', target: 'account-self-service' }),
+])
+
+const platformTabs = (): readonly MobilePresentationTab[] => Object.freeze([
+  Object.freeze({ slot: 'primary', label: '工作台', target: 'workbench' }),
+  Object.freeze({ slot: 'secondary', label: '工作包', target: 'work-packages' }),
+  Object.freeze({ slot: 'domain', label: '系统配置', target: 'organization' }),
+  Object.freeze({ slot: 'notifications', label: '规则', target: 'rules' }),
+  Object.freeze({ slot: 'profile', label: '我的', target: 'all-functions' }),
+])
+
+const hrTabs = (domainLabel: string, domainTarget: MobilePresentationTarget): readonly MobilePresentationTab[] => Object.freeze([
+  Object.freeze({ slot: 'primary', label: '工作台', target: 'workbench' }),
+  Object.freeze({ slot: 'secondary', label: '人员', target: 'organization' }),
+  Object.freeze({ slot: 'domain', label: domainLabel, target: domainTarget }),
+  Object.freeze({ slot: 'notifications', label: 'KPI', target: 'kpi-center' }),
+  Object.freeze({ slot: 'profile', label: '我的', target: 'all-functions' }),
 ])
 
 const POLICIES: Readonly<Record<RolePresentationKey, RolePresentationPolicy>> = Object.freeze({
@@ -80,7 +98,7 @@ const POLICIES: Readonly<Record<RolePresentationKey, RolePresentationPolicy>> = 
       'workbench', 'my-work', 'tasks', 'daily-reports-my', 'evaluations',
       'kpi-center', 'notifications', 'all-functions',
     ),
-    mobileTabs: tabs('工作台', 'workbench', '日报', 'daily-reports-my'),
+    mobileTabs: tabs('工作', 'my-work'),
   }),
   OTA_ASSISTANT: Object.freeze({
     key: 'OTA_ASSISTANT',
@@ -90,7 +108,7 @@ const POLICIES: Readonly<Record<RolePresentationKey, RolePresentationPolicy>> = 
       'workbench', 'my-work', 'tasks', 'daily-reports-my', 'kpi-center',
       'notifications', 'all-functions',
     ),
-    mobileTabs: tabs('工作台', 'workbench', '日报', 'daily-reports-my'),
+    mobileTabs: tabs('工作', 'my-work'),
   }),
   SUPERVISOR: Object.freeze({
     key: 'SUPERVISOR',
@@ -101,7 +119,7 @@ const POLICIES: Readonly<Record<RolePresentationKey, RolePresentationPolicy>> = 
       'daily-operations', 'evaluations', 'kpi-center', 'notifications',
       'all-functions',
     ),
-    mobileTabs: tabs('工作台', 'workbench', '团队', 'team-work'),
+    mobileTabs: tabs('团队', 'team-work'),
   }),
   ASSISTANT_MANAGER: Object.freeze({
     key: 'ASSISTANT_MANAGER',
@@ -112,7 +130,7 @@ const POLICIES: Readonly<Record<RolePresentationKey, RolePresentationPolicy>> = 
       'daily-report-templates', 'daily-operations', 'evaluations', 'kpi-center',
       'notifications', 'all-functions',
     ),
-    mobileTabs: tabs('工作台', 'workbench', '运营', 'daily-operations'),
+    mobileTabs: tabs('日运营', 'daily-operations'),
   }),
   HOTEL_MANAGER: Object.freeze({
     key: 'HOTEL_MANAGER',
@@ -123,7 +141,7 @@ const POLICIES: Readonly<Record<RolePresentationKey, RolePresentationPolicy>> = 
       'daily-operations', 'kpi-center', 'rules', 'evaluations', 'notifications',
       'all-functions',
     ),
-    mobileTabs: tabs('门店', 'hotel-dashboard', '运营', 'daily-operations', '工作', 'my-work'),
+    mobileTabs: tabs('日运营', 'daily-operations'),
   }),
   REGIONAL_OPERATIONS: Object.freeze({
     key: 'REGIONAL_OPERATIONS',
@@ -133,7 +151,7 @@ const POLICIES: Readonly<Record<RolePresentationKey, RolePresentationPolicy>> = 
       'workbench', 'operations-dashboard', 'tasks', 'daily-reports-my',
       'daily-operations', 'kpi-center', 'rules', 'notifications', 'all-functions',
     ),
-    mobileTabs: tabs('区域', 'operations-dashboard', '运营', 'daily-operations'),
+    mobileTabs: tabs('日运营', 'daily-operations'),
   }),
   HR: Object.freeze({
     key: 'HR',
@@ -143,7 +161,7 @@ const POLICIES: Readonly<Record<RolePresentationKey, RolePresentationPolicy>> = 
       'workbench', 'tasks', 'organization', 'wecom-bindings', 'wecom-onboarding',
       'kpi-center', 'notifications', 'all-functions',
     ),
-    mobileTabs: tabs('人事', 'organization', 'KPI', 'kpi-center'),
+    mobileTabs: hrTabs('入职', 'wecom-onboarding'),
   }),
   HR_ADMINISTRATION_SUPERVISOR: Object.freeze({
     key: 'HR_ADMINISTRATION_SUPERVISOR',
@@ -153,7 +171,7 @@ const POLICIES: Readonly<Record<RolePresentationKey, RolePresentationPolicy>> = 
       'workbench', 'team-work', 'tasks', 'organization', 'wecom-bindings',
       'wecom-onboarding', 'notifications', 'all-functions',
     ),
-    mobileTabs: tabs('人事', 'organization', '团队', 'team-work'),
+    mobileTabs: hrTabs('团队', 'team-work'),
   }),
   HR_ADMINISTRATION: Object.freeze({
     key: 'HR_ADMINISTRATION',
@@ -163,7 +181,7 @@ const POLICIES: Readonly<Record<RolePresentationKey, RolePresentationPolicy>> = 
       'workbench', 'tasks', 'organization', 'wecom-bindings',
       'wecom-onboarding', 'notifications', 'all-functions',
     ),
-    mobileTabs: tabs('人事', 'organization', '任务', 'tasks'),
+    mobileTabs: hrTabs('企微绑定', 'wecom-bindings'),
   }),
   GROUP_CHAIRMAN: Object.freeze({
     key: 'GROUP_CHAIRMAN',
@@ -185,7 +203,7 @@ const POLICIES: Readonly<Record<RolePresentationKey, RolePresentationPolicy>> = 
       'daily-operations', 'kpi-center', 'work-packages', 'rules',
       'notifications', 'all-functions',
     ),
-    mobileTabs: tabs('集团', 'workbench', '经营', 'daily-operations'),
+    mobileTabs: tabs('日运营', 'daily-operations'),
   }),
   CEO: Object.freeze({
     key: 'CEO',
@@ -199,7 +217,7 @@ const POLICIES: Readonly<Record<RolePresentationKey, RolePresentationPolicy>> = 
       'organization', 'wecom-bindings', 'wecom-onboarding', 'notifications',
       'all-functions',
     ),
-    mobileTabs: tabs('集团', 'workbench', '经营', 'daily-operations', '决策', 'investments'),
+    mobileTabs: tabs('日运营', 'daily-operations'),
   }),
   PLATFORM_ADMIN: Object.freeze({
     key: 'PLATFORM_ADMIN',
@@ -212,14 +230,14 @@ const POLICIES: Readonly<Record<RolePresentationKey, RolePresentationPolicy>> = 
       'evaluations', 'templates', 'organization', 'wecom-webhooks',
       'wecom-bindings', 'wecom-onboarding', 'notifications', 'all-functions',
     ),
-    mobileTabs: tabs('平台', 'workbench', '配置', 'organization'),
+    mobileTabs: platformTabs(),
   }),
   GENERIC: Object.freeze({
     key: 'GENERIC',
     knownRole: false,
     focus: '当前任职允许的工作与业务功能',
     desktopModuleIds: null,
-    mobileTabs: tabs('工作台', 'workbench', '日报', 'daily-reports-my'),
+    mobileTabs: tabs('工作', 'my-work'),
   }),
 })
 

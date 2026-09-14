@@ -58,6 +58,7 @@ class StoreManagerDailyClosedLoopIntegrationTest {
     private static final String ROOM_ITEM = "47050000-0000-0000-0000-000000000005";
     private static final String ROOM_FORM = "47020000-0000-0000-0000-000000000005";
     private static final String REPORT_TEMPLATE = "47100000-0000-0000-0000-000000000001";
+    private static final String DAILY_STANDARD = "41300000-0000-0000-0000-000000000001";
 
     private static final EmbeddedPostgres POSTGRES = startPostgres();
     private static final DataSource DATA_SOURCE = POSTGRES.getPostgresDatabase();
@@ -334,6 +335,13 @@ class StoreManagerDailyClosedLoopIntegrationTest {
                         .contentType("application/json").content("{\"expectedVersion\":0}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("SUBMITTED"));
+        JsonNode teamWork = response(identity(get(
+                        "/api/v1/team/work-expectations?targetOrgUnitId=" + HOTEL), CEO, null), 200);
+        JsonNode submittedExpectation = findById(teamWork, morningExpectation);
+        assertThat(teamWork.path(0).path("id").asText()).isEqualTo(morningExpectation);
+        assertThat(submittedExpectation.path("period_type").asText()).isEqualTo("DAY");
+        assertThat(submittedExpectation.path("hotel_org_unit_id").asText()).isEqualTo(HOTEL);
+        assertThat(submittedExpectation.path("hotel_name").asText()).isNotBlank();
         mockMvc.perform(identity(post("/api/v1/work-data/records/{recordId}/actions/review", recordId),
                         ASSISTANT_GENERAL_MANAGER, ASSISTANT_GENERAL_MANAGER_ASSIGNMENT)
                         .contentType("application/json")
@@ -385,6 +393,61 @@ class StoreManagerDailyClosedLoopIntegrationTest {
                   and request.provider_code = 'INTERNAL_RULE_ENGINE'
                   and request.input_snapshot ->> 'reportId' = ?
                 """, Integer.class, TENANT, reportId.toString())).isEqualTo(1);
+
+        UUID evaluationRecordId = UUID.randomUUID();
+        jdbc.update("""
+                insert into work_record
+                    (id, tenant_id, org_unit_id, employee_id, position_assignment_id,
+                     form_version_id, business_date, status, payload, submitted_at,
+                     work_package_version_id, work_package_item_id, record_kind,
+                     target_org_unit_id, occurred_at, submitted_by_account_id,
+                     attempt_no, content_hash)
+                values
+                    (?, ?::uuid, '12000000-0000-0000-0000-000000000005'::uuid,
+                     ?::uuid, ?::uuid, ?::uuid, current_date, 'SUBMITTED',
+                     '{"summary":"店长日清已完成"}'::jsonb, now(), ?::uuid, ?::uuid,
+                     'INSPECTION', ?::uuid, now(), ?::uuid, 99, 'evaluation-target-org-test')
+                """, evaluationRecordId, TENANT, GENERAL_MANAGER_EMPLOYEE,
+                GENERAL_MANAGER_ASSIGNMENT, MORNING_FORM, PACKAGE_VERSION, MORNING_ITEM, HOTEL,
+                GENERAL_MANAGER);
+        mockMvc.perform(identity(post("/api/v1/standard-evaluations"), CEO, null)
+                        .header("Idempotency-Key", "store-manager-evaluation-" + UUID.randomUUID())
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "subjectType":"WORK_RECORD",
+                                  "subjectId":"%s",
+                                  "orgUnitId":"%s",
+                                  "positionAssignmentId":"%s",
+                                  "standardVersionId":"%s",
+                                  "inputSnapshot":{"summary":"店长日清已完成"}
+                                }
+                                """.formatted(evaluationRecordId, HOTEL, GENERAL_MANAGER_ASSIGNMENT, DAILY_STANDARD)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.subject_type").value("WORK_RECORD"))
+                .andExpect(jsonPath("$.subject_id").value(evaluationRecordId.toString()));
+
+        mockMvc.perform(identity(post("/api/v1/tasks"), CEO, null)
+                        .header("Idempotency-Key", "store-manager-corrective-task-" + UUID.randomUUID())
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "orgUnitId":"%s",
+                                  "assigneeAssignmentId":"%s",
+                                  "workRecordId":"%s",
+                                  "title":"整改：店长日清检查",
+                                  "description":"补充结果说明和现场证据",
+                                  "priority":"NORMAL",
+                                  "dueAt":"%s",
+                                  "sourceSnapshot":{"source":"TEAM_WORK_REVIEW"},
+                                  "dispatchNow":true
+                                }
+                                """.formatted(HOTEL, GENERAL_MANAGER_ASSIGNMENT, evaluationRecordId,
+                                OffsetDateTime.now().plusDays(1).withNano(0))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.lifecycle_status").value("PENDING_ACK"))
+                .andExpect(jsonPath("$.participants[1].participant_type").value("REVIEWER"))
+                .andExpect(jsonPath("$.participants[1].position_assignment_id").isNotEmpty());
     }
 
     @Test

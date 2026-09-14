@@ -84,6 +84,7 @@ import { WecomUserBindingAdministration } from './features/wecom/WecomUserBindin
 import { consumeWecomBindingEntry } from './features/wecom/bindingEntryRoute'
 import { WecomBindingEnrollmentEntry } from './features/wecom/WecomBindingEnrollmentEntry'
 import { WecomDirectoryOnboardingAdministration } from './features/wecom/WecomDirectoryOnboardingAdministration'
+import { RoleWorkbench } from './features/workbench/RoleWorkbench'
 import {
   AllFunctionsPage,
   MobileBottomNavigation,
@@ -104,8 +105,8 @@ const initialWecomBindingEntry = consumeWecomBindingEntry()
 
 const navigation: Array<{ id: AppRouteId; sectionId?: string; label: string; icon: string; group?: string; permissions?: string[] }> = [
   { id: 'workbench', label: '角色工作台', icon: '⌂' },
-  { id: 'hotel-dashboard', label: '门店驾驶舱', icon: '▤', group: '管理驾驶舱', permissions: ['dashboard.hotel'] },
-  { id: 'operations-dashboard', label: '多门店经营', icon: '▥', group: '管理驾驶舱', permissions: ['dashboard.operations'] },
+  { id: 'hotel-dashboard', label: '门店工作台', icon: '▤', permissions: ['dashboard.hotel'] },
+  { id: 'operations-dashboard', label: '多门店工作台', icon: '▥', permissions: ['dashboard.operations'] },
   { id: 'investments', label: '投资测算', icon: '¥', group: '投资决策', permissions: [permissionCodes.investment.read] },
   { id: 'work-packages', label: '工作包中心', icon: '▦', group: '标准与工作', permissions: ['work-package.read', 'work-package.manage', 'standard.read'] },
   { id: 'my-work', label: '我的工作', icon: '✓', permissions: ['work-record.read', 'work-record.submit', 'work.submit'] },
@@ -126,7 +127,6 @@ const navigation: Array<{ id: AppRouteId; sectionId?: string; label: string; ico
 ]
 
 function sectionsForMobileTab(tab: Pick<MobilePresentationTab, 'slot'> & { target: AppRouteId }): readonly AppSectionId[] {
-  if (tab.slot === 'secondary' && tab.target === 'tasks') return ['tasks', 'my-work']
   if (tab.slot === 'profile') return [tab.target === 'account-self-service' ? 'account-self-service' : 'all-functions']
   if (tab.target === 'daily-reports-my' || tab.target === 'daily-reports-team') return ['daily-reports']
   if (tab.target === 'daily-operations') return ['daily-operations']
@@ -137,10 +137,11 @@ function sectionsForMobileTab(tab: Pick<MobilePresentationTab, 'slot'> & { targe
 }
 
 function iconForMobileTab(tab: MobilePresentationTab): MobileNavigationIcon {
-  if (tab.slot === 'secondary' && tab.target === 'tasks') return 'tasks'
+  if (tab.target === 'kpi-center') return 'performance'
+  if (tab.target === 'daily-operations' || tab.target === 'organization') return 'operations'
   if (tab.slot === 'secondary') return 'reports'
-  if (tab.slot === 'domain') return 'reports'
-  if (tab.slot === 'notifications') return 'notifications'
+  if (tab.slot === 'domain') return 'operations'
+  if (tab.slot === 'notifications') return 'performance'
   if (tab.slot === 'profile') return 'profile'
   return 'workbench'
 }
@@ -245,7 +246,7 @@ function Workbench({ identity, permissions, executiveTasksEnabled, go }: { ident
       </section>
       <section className="dashboard-grid">
         {(canReadOwnWork || canReadTeamWork) && <article className="panel span-2"><header><div><span className="panel-kicker">{hasAssignment ? '今日工作' : '管理范围'}</span><h2>{hasAssignment ? '今日岗位工作' : '集团管理视图'}</h2></div><button className="link-button" onClick={() => go(hasAssignment ? 'my-work' : 'team-work')}>{hasAssignment ? '查看全部' : '查看团队执行'}</button></header>
-          {hasAssignment ? <div className="compact-list">{scopedWork.slice(0, 5).map((item) => <div key={item.id}><i className={`work-dot ${item.status.toLowerCase()}`} /><span><strong>{item.title}</strong><small>{item.targetOrgName} · {item.packageName}</small></span><span className="compact-meta"><Status value={item.status} /><small>{formatDate(item.dueAt)}</small></span></div>)}</div> : <div className="state-card"><b>◎</b><strong>当前为集团管理账号</strong><span>CEO 等无岗位任职的账号通过团队工作、任务中心和驾驶舱管理，不生成虚假的个人工作。</span></div>}
+          {hasAssignment ? <div className="compact-list">{scopedWork.slice(0, 5).map((item) => <div key={item.id}><i className={`work-dot ${item.status.toLowerCase()}`} /><span><strong>{item.title}</strong><small>{item.targetOrgName} · {item.packageName}</small></span><span className="compact-meta"><Status value={item.status} /><small>{formatDate(item.dueAt)}</small></span></div>)}</div> : <div className="state-card"><b>◎</b><strong>当前为集团管理账号</strong><span>CEO 等无岗位任职的账号通过角色工作台管理，不生成虚假的个人工作。</span></div>}
         </article>}
         {canReadNotifications && <article className="panel"><header><div><span className="panel-kicker">消息提醒</span><h2>管理提醒</h2></div><button className="link-button" onClick={() => go('notifications')}>通知中心</button></header>
           <div className="notice-list">{scopedNotices.slice(0, 4).map((item) => <div className={item.readAt ? 'read' : ''} key={item.id}><i /><span><strong>{item.title}</strong><small>{item.content}</small></span></div>)}</div>
@@ -618,8 +619,8 @@ function MyWork({ identity, routeParams, go }: { identity: RoleContext; routePar
   </section>
 }
 
-function TeamWork({ identity, permissions, routeParams }: { identity: RoleContext; permissions: string[]; routeParams: RouteParams }) {
-  return <TeamWorkPage identity={identity} permissions={permissions} routeParams={routeParams} />
+function TeamWork({ identity, permissions, routeParams, go }: { identity: RoleContext; permissions: string[]; routeParams: RouteParams; go: Navigate }) {
+  return <TeamWorkPage identity={identity} permissions={permissions} routeParams={routeParams} go={go} />
 }
 
 const defaultCondition = '{\n  "op": "EXISTS",\n  "fact": "workRecordId"\n}'
@@ -814,6 +815,9 @@ function Tasks({ identity, permissions, routeParams, go }: { identity: RoleConte
   const [selected, setSelected] = useState<ManagementTask>()
   const [linkedTaskError, setLinkedTaskError] = useState<string>()
   const [creating, setCreating] = useState(false)
+  useEffect(() => {
+    if (routeParams.create === 'true' && (permissions.includes('*') || permissions.includes('task.create'))) setCreating(true)
+  }, [permissions, routeParams.create])
   const tasks = resource.data.filter((item) => {
     if (statusFilter === 'ALL') return true
     if (statusFilter === 'ACTIVE') return !['COMPLETED', 'CANCELLED'].includes(item.status)
@@ -843,7 +847,7 @@ function Tasks({ identity, permissions, routeParams, go }: { identity: RoleConte
     {linkedTaskError && <div className="inline-error page-error">{linkedTaskError}</div>}
     <article className="panel table-panel"><DataState loading={resource.loading} error={resource.error} empty={!tasks.length} onRetry={resource.reload} />{!resource.loading && !resource.error && !!tasks.length && <TaskRows tasks={tasks} onSelect={setSelected} />}</article>
     {selected && <TaskDetail initial={selected} identity={identity} permissions={permissions} onClose={() => { setSelected(undefined); if (routeParams.taskId) go('tasks', { ...routeParams, taskId: undefined }) }} onChanged={resource.reload} />}
-    {creating && <TaskCreateDialog identity={identity} onClose={() => setCreating(false)} onCreated={resource.reload} />}
+    {creating && <TaskCreateDialog identity={identity} onClose={() => { setCreating(false); if (routeParams.create) go('tasks', { ...routeParams, create: undefined }) }} onCreated={async () => { await resource.reload(); if (routeParams.create) go('tasks', { ...routeParams, create: undefined }) }} />}
   </section>
 }
 
@@ -1101,6 +1105,8 @@ function AuthenticatedApp({ onLogout }: { onLogout?: () => void }) {
   const isChairmanContext = presentationRoleCode === 'GROUP_CHAIRMAN'
   const executiveTasksEnabled = me.data.capabilities.groupManagement.executiveTasksEnabled
   const permissionVisibleNavigation = useMemo(() => navigation.filter((item) => {
+    if (['hotel-dashboard', 'operations-dashboard', 'tasks', 'notifications'].includes(item.id)) return false
+    if (['rules', 'work-packages'].includes(item.id) && !isPlatformAdmin) return false
     if (item.id === 'my-work' && !activeIdentity.businessActorAssignmentId) return false
     if (item.id === 'tasks' && isChairmanContext) {
       return executiveTasksEnabled && Boolean(activeIdentity.businessActorAssignmentId) &&
@@ -1110,7 +1116,7 @@ function AuthenticatedApp({ onLogout }: { onLogout?: () => void }) {
       (demoFallbackEnabled && me.source === 'demo' && !isDailyFeatureRoute(item.id) && !isInvestmentFeatureRoute(item.id)) ||
       activePermissions.includes('*') ||
       item.permissions.some((permission) => activePermissions.includes(permission))
-  }), [activeIdentity.businessActorAssignmentId, activePermissions, executiveTasksEnabled, isChairmanContext, me.source])
+  }), [activeIdentity.businessActorAssignmentId, activePermissions, executiveTasksEnabled, isChairmanContext, isPlatformAdmin, me.source])
   const visibleNavigation = useMemo(
     () => applyPublishedModuleVisibility(
       permissionVisibleNavigation,
@@ -1177,7 +1183,7 @@ function AuthenticatedApp({ onLogout }: { onLogout?: () => void }) {
     }
     let legacyPage: React.ReactNode
     switch (view) {
-      case 'workbench': legacyPage = <Workbench identity={activeIdentity} permissions={activePermissions} executiveTasksEnabled={executiveTasksEnabled} go={navigate} />; break
+      case 'workbench': legacyPage = <RoleWorkbench identity={activeIdentity} permissions={activePermissions} presentationKey={presentationPolicy.key} executiveTasksEnabled={executiveTasksEnabled} routeParams={routeParams} go={navigate} />; break
       case 'all-functions': legacyPage = <AllFunctionsPage
         items={visibleNavigation}
         roleLabel={activeIdentity.label}
@@ -1192,7 +1198,7 @@ function AuthenticatedApp({ onLogout }: { onLogout?: () => void }) {
       case 'operations-dashboard': legacyPage = <OperationsDashboardPage identity={activeIdentity} />; break
       case 'work-packages': legacyPage = <WorkPackageCenter identity={activeIdentity} permissions={activePermissions} />; break
       case 'my-work': legacyPage = <MyWork identity={activeIdentity} routeParams={routeParams} go={navigate} />; break
-      case 'team-work': legacyPage = <TeamWork identity={activeIdentity} permissions={activePermissions} routeParams={routeParams} />; break
+      case 'team-work': legacyPage = <TeamWork identity={activeIdentity} permissions={activePermissions} routeParams={routeParams} go={navigate} />; break
       case 'rules': legacyPage = <Rules identity={activeIdentity} permissions={activePermissions} />; break
       case 'tasks': legacyPage = isChairmanContext && executiveTasksEnabled
         ? <Suspense fallback={<div className="state-card"><div className="spinner" /><strong>正在加载董事长任务模块</strong></div>}><ExecutiveTaskFeature identity={activeIdentity} grantedPermissions={activePermissions} routeParams={routeParams} go={navigate} /></Suspense>
@@ -1217,7 +1223,8 @@ function AuthenticatedApp({ onLogout }: { onLogout?: () => void }) {
     const routeAccess = navigation.find((item) => item.id === view)
     const chairmanTaskAllowed = view !== 'tasks' || !isChairmanContext || (executiveTasksEnabled && Boolean(activeIdentity.businessActorAssignmentId))
     const accountSelfServiceAllowed = view !== 'account-self-service' || isChairmanContext
-    const contextAllowed = (view !== 'my-work' || Boolean(activeIdentity.businessActorAssignmentId)) && chairmanTaskAllowed && accountSelfServiceAllowed && routePresentationAllowed
+    const administratorRouteAllowed = !['rules', 'work-packages'].includes(view) || isPlatformAdmin
+    const contextAllowed = (view !== 'my-work' || Boolean(activeIdentity.businessActorAssignmentId)) && chairmanTaskAllowed && accountSelfServiceAllowed && administratorRouteAllowed && routePresentationAllowed
     const boundaryPermissions = demoFallbackEnabled && me.source === 'demo' ? ['*'] : activePermissions
     return <PageAccessBoundary
       permissions={boundaryPermissions}
@@ -1226,7 +1233,7 @@ function AuthenticatedApp({ onLogout }: { onLogout?: () => void }) {
     >
       {legacyPage}
     </PageAccessBoundary>
-  }, [view, routeParams, activeIdentity, activePermissions, executiveTasksEnabled, isChairmanContext, me.error, me.loading, presentationRoleCode, routePresentationAllowed, visibleNavigation])
+  }, [view, routeParams, activeIdentity, activePermissions, executiveTasksEnabled, isChairmanContext, isPlatformAdmin, me.error, me.loading, presentationPolicy.key, presentationRoleCode, routePresentationAllowed, visibleNavigation])
   const mobileNavigationItems = useMemo(() => {
     const visibleIds = new Set(visibleNavigation.map((item) => item.id))
     const resolveMobileTarget = (tab: MobilePresentationTab): AppRouteId | undefined => {
@@ -1234,9 +1241,6 @@ function AuthenticatedApp({ onLogout }: { onLogout?: () => void }) {
       if (tab.target === 'workbench' && visibleIds.has('workbench')) return tab.target
       if (tab.target === 'daily-reports-my' && visibleIds.has('daily-reports-my')) return navigationTarget(tab.target)
       if (visibleIds.has(tab.target)) return navigationTarget(tab.target)
-      if (tab.slot === 'secondary' && tab.target === 'tasks') {
-        return visibleNavigation.find((item) => ['tasks', 'my-work', 'team-work'].includes(item.id))?.id
-      }
       return undefined
     }
     return presentationPolicy.mobileTabs.map((tab) => {
@@ -1249,7 +1253,7 @@ function AuthenticatedApp({ onLogout }: { onLogout?: () => void }) {
         matchSections: resolvedTarget ? sectionsForMobileTab({ ...tab, target }) : [],
         icon: iconForMobileTab(tab),
         ...(!resolvedTarget ? { disabled: true } : {}),
-        ...(tab.slot === 'notifications' ? { badge: 'unread' as const } : {}),
+        ...(tab.target === 'notifications' ? { badge: 'unread' as const } : {}),
       }
     }) as unknown as MobileNavigationItems
   }, [activeIdentity.businessActorAssignmentId, activePermissions, presentationPolicy, visibleNavigation])
@@ -1263,7 +1267,7 @@ function AuthenticatedApp({ onLogout }: { onLogout?: () => void }) {
 
   return <div className="shell">
     <aside className="sidebar"><div className="brand-mark"><div>四</div><span><strong>{product.name}</strong><small>{product.edition} · {product.editionLabel}</small></span></div>
-      <nav>{visibleNavigation.map((item, index) => <div key={item.id}>{item.group && <span className="nav-group">{item.group}</span>}<button className={sectionId === (item.sectionId ?? item.id) ? 'active' : ''} onClick={() => navigate(navigationTarget(item.id))}><i>{item.icon}</i><span>{item.label}</span>{item.id === 'notifications' && unreadCount > 0 && <b>{unreadCount}</b>}</button>{index === 0 && <div className="nav-separator" />}</div>)}</nav>
+      <nav>{visibleNavigation.map((item, index) => <div key={item.id}>{item.group && <span className="nav-group">{item.group}</span>}<button className={sectionId === (item.sectionId ?? item.id) ? 'active' : ''} onClick={() => navigate(navigationTarget(item.id))}><i>{item.icon}</i><span>{item.id === 'workbench' ? `${activeIdentity.label}工作台` : item.label}</span>{item.id === 'notifications' && unreadCount > 0 && <b>{unreadCount}</b>}</button>{index === 0 && <div className="nav-separator" />}</div>)}</nav>
       <div className="sidebar-footer"><span>{product.version}</span><small>标准 → 工作 → 任务 → 执行 → 验收</small>{icpRecordNumber && <a className="icp-record" href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer">{icpRecordNumber}</a>}</div>
     </aside>
     <main><header className="topbar"><div className="mobile-top-brand" aria-label={product.name}><span>四</span></div><div className={`connection ${me.error ? 'offline' : pilotDemoMode ? 'demo' : ''}`}><span className="live-dot" />{pilotDemoMode ? 'Pilot 演示数据' : me.error ? '身份接口异常' : '服务端权限已解析'}<small>{pilotDemoMode ? '仅用于界面与流程走查，不代表真实业务数据或权限' : authMode === 'dev-header' ? '本地验收账号 · 权限由数据库决定' : 'JWT/SSO 会话身份'}</small></div><span className="pilot-badge">{product.editionLabel}</span>

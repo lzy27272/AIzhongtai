@@ -77,63 +77,188 @@ function demoScopedTeam(items: WorkExpectation[], roleCode: string) {
   return items
 }
 
-export function TeamWorkPage({ identity, permissions, routeParams = {} }: { identity: RoleContext; permissions: string[]; routeParams?: RouteParams }) {
+const exceptionStatuses = new Set(['OVERDUE', 'MISSED', 'FAILED'])
+const exceptionOutcomes = new Set(['FAIL', 'WARNING'])
+
+function currentBusinessDate() {
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date())
+}
+
+function isDailyChecklist(item: WorkExpectation) {
+  return item.periodType === 'DAY' || item.periodKey?.startsWith('DAY:') === true
+}
+
+function isException(item: WorkExpectation) {
+  return exceptionStatuses.has(item.status) || exceptionOutcomes.has(item.evaluationOutcome ?? '')
+}
+
+function isCurrentException(item: WorkExpectation, today: string) {
+  return isException(item) && (!isDailyChecklist(item) || item.businessDate === today)
+}
+
+function teamWorkPriority(item: WorkExpectation, today: string) {
+  if (item.status === 'SUBMITTED') return 0
+  if (item.businessDate === today && isException(item)) return 1
+  if (item.businessDate === today) return 2
+  if (!isDailyChecklist(item) && isException(item)) return 3
+  return 4
+}
+
+export function TeamWorkPage({ identity, permissions, routeParams = {}, go }: { identity: RoleContext; permissions: string[]; routeParams?: RouteParams; go: Navigate }) {
   const resource = useResource(`${identity.key}:p0-team-work:${routeParams.hotelId ?? 'all'}`, () => loadTeamWork(identity, {
     orgUnitId: routeParams.hotelId,
   }), [])
   const [selected, setSelected] = useState<WorkExpectation>()
   const scopedItems = resource.source === 'demo' ? demoScopedTeam(resource.data, identity.roleCode) : resource.data
+  const today = currentBusinessDate()
+  const currentItems = scopedItems.filter((item) => !isDailyChecklist(item) || item.businessDate === today)
+  const historicalDailyItems = scopedItems.filter((item) => isDailyChecklist(item) && item.businessDate !== today)
   const statusFilter = (routeParams.status || 'ALL').toUpperCase()
-  const items = scopedItems.filter((item) => {
+  const filterSource = statusFilter === 'HISTORY' ? historicalDailyItems : currentItems
+  const items = filterSource.filter((item) => {
     if (statusFilter === 'ALL') return true
     if (statusFilter === 'PENDING_WORK') return !['SUBMITTED', 'SATISFIED', 'WAIVED', 'CANCELLED'].includes(item.status)
     if (statusFilter === 'SUBMITTED') return ['SUBMITTED', 'COMPLETED', 'SATISFIED'].includes(item.status)
-    if (statusFilter === 'EXCEPTION') return ['OVERDUE', 'MISSED', 'FAILED'].includes(item.status) || ['FAIL', 'WARNING'].includes(item.evaluationOutcome ?? '')
+    if (statusFilter === 'EXCEPTION') return isCurrentException(item, today)
+    if (statusFilter === 'HISTORY') return true
     return item.status === statusFilter
+  }).sort((left, right) => {
+    const priority = teamWorkPriority(left, today) - teamWorkPriority(right, today)
+    if (priority) return priority
+    const rightTime = right.latestSubmittedAt ?? right.records?.[0]?.submittedAt ?? right.dueAt ?? right.businessDate
+    const leftTime = left.latestSubmittedAt ?? left.records?.[0]?.submittedAt ?? left.dueAt ?? left.businessDate
+    return rightTime.localeCompare(leftTime)
   })
   useEffect(() => {
     if (!routeParams.expectationId) return
     const linkedExpectation = scopedItems.find((item) => item.id === routeParams.expectationId)
     if (linkedExpectation) setSelected(linkedExpectation)
   }, [routeParams.expectationId, scopedItems])
-  const submitted = items.filter((item) => ['SUBMITTED', 'COMPLETED', 'SATISFIED'].includes(item.status)).length
-  const exception = items.filter((item) => ['OVERDUE', 'MISSED', 'FAILED'].includes(item.status) || ['FAIL', 'WARNING'].includes(item.evaluationOutcome ?? '')).length
+  const submitted = currentItems.filter((item) => ['SUBMITTED', 'COMPLETED', 'SATISFIED'].includes(item.status)).length
+  const pendingReview = currentItems.filter((item) => item.status === 'SUBMITTED').length
+  const exceptionItems = currentItems.filter((item) => isCurrentException(item, today))
+  const hotelSummaries = Array.from(currentItems.reduce((groups, item) => {
+    const id = item.hotelOrgUnitId ?? item.orgUnitId
+    if (!id) return groups
+    const current = groups.get(id) ?? { id, name: item.hotelName ?? item.targetOrgName, total: 0, exception: 0 }
+    current.total += 1
+    if (isCurrentException(item, today)) current.exception += 1
+    groups.set(id, current)
+    return groups
+  }, new Map<string, { id: string; name: string; total: number; exception: number }>()).values())
+    .sort((left, right) => right.exception - left.exception || left.name.localeCompare(right.name, 'zh-CN'))
+  const completionRate = currentItems.length ? Math.round(submitted / currentItems.length * 100) : 0
+  const switchStatus = (status?: string) => go('team-work', { ...routeParams, status, expectationId: undefined })
 
   return <section className="page-section">
-    <PageHeader eyebrow="TEAM EXECUTION" title="团队工作看板" description="查看团队记录详情、完成复核，并从异常工作记录创建可验收的整改任务。" source={resource.source} />
-    <section className="mini-metrics"><span><strong>{items.length}</strong>范围内工作</span><span><strong>{submitted}</strong>已提交/完成</span><span className="danger"><strong>{exception}</strong>异常与逾期</span><span><strong>{items.length ? Math.round(submitted / items.length * 100) : 0}%</strong>完成率</span></section>
+    <PageHeader eyebrow="团队执行" title="团队工作看板" description="日工作清单只纳入当日统计；跨日异常仅保留非日清任务，避免历史漏交持续累加。" source={resource.source} />
+    <section className="mini-metrics team-metrics"><button type="button" className={statusFilter === 'ALL' ? 'active' : ''} onClick={() => switchStatus(undefined)}><strong>{currentItems.length}</strong>当前范围工作</button><button type="button" className={statusFilter === 'SUBMITTED' ? 'active' : ''} onClick={() => switchStatus('SUBMITTED')}><strong>{submitted}</strong>已提交/完成</button><button type="button" className={`danger ${statusFilter === 'EXCEPTION' ? 'active' : ''}`} onClick={() => switchStatus('EXCEPTION')}><strong>{exceptionItems.length}</strong>当日及持续异常</button><span><strong>{completionRate}%</strong>当前完成率</span></section>
+    <div className="filters team-work-filters"><button className={statusFilter === 'ALL' ? 'active' : ''} onClick={() => switchStatus(undefined)}>当前工作</button><button className={statusFilter === 'SUBMITTED' ? 'active' : ''} onClick={() => switchStatus('SUBMITTED')}>待复核/已完成</button><button className={statusFilter === 'EXCEPTION' ? 'active' : ''} onClick={() => switchStatus('EXCEPTION')}>异常与逾期</button><button className={statusFilter === 'HISTORY' ? 'active' : ''} onClick={() => switchStatus('HISTORY')}>历史日清记录</button>{routeParams.hotelId && <button onClick={() => go('team-work', { status: routeParams.status })}>返回全部门店</button>}</div>
+    {pendingReview > 0 && statusFilter !== 'SUBMITTED' && <button type="button" className="team-review-alert" onClick={() => switchStatus('SUBMITTED')}><span><strong>{pendingReview} 项工作等待复核</strong><small>新提交记录已置顶，点击进入集中处理</small></span><b>立即查看 →</b></button>}
+    {hotelSummaries.length > 1 && <section className="team-hotel-summary"><header><div><span className="panel-kicker">门店异常</span><h2>按门店查看异常</h2></div><small>点击门店进入该门店的当日逾期与持续性任务异常</small></header><div>{hotelSummaries.map((hotel) => <button type="button" className={hotel.exception ? 'has-exception' : ''} key={hotel.id} onClick={() => go('team-work', { hotelId: hotel.id, status: 'EXCEPTION' })}><span><strong>{hotel.name}</strong><small>当前工作 {hotel.total} 项</small></span><b>{hotel.exception}</b><em>{hotel.exception ? '项异常，点击查看' : '当前正常'}</em></button>)}</div></section>}
     <article className="panel table-panel">
       <LoadingState loading={resource.loading} error={resource.error} empty={!items.length} retry={resource.reload} />
       {!resource.loading && !resource.error && !!items.length && <div className="data-table p0-team-table">
         <div className="table-row table-head"><span>工作记录</span><span>目标组织</span><span>负责人</span><span>评价</span><span>状态</span><span>管理操作</span></div>
-        {items.map((item) => <div className="table-row" key={item.id}>
+        {items.map((item) => <div className={`table-row ${item.status === 'SUBMITTED' ? 'awaiting-review' : ''}`} key={item.id}>
           <span><strong>{item.title}</strong><small>{item.packageName} · {item.itemName}</small></span>
-          <span>{item.targetOrgName}</span><span>{item.assigneeName}<small>{formatDate(item.dueAt)}</small></span>
+          <span>{item.hotelName ?? item.targetOrgName}{item.hotelName && item.hotelName !== item.targetOrgName && <small>{item.targetOrgName}</small>}</span><span>{item.assigneeName}<small>{formatDate(item.dueAt)}</small></span>
           <span>{item.evaluationOutcome ? <Status value={item.evaluationOutcome} /> : '—'}</span><span><Status value={item.status} /></span>
-          <span><button className="link-button" onClick={() => setSelected(item)}>详情、复核与整改</button></span>
+          <span><button className="link-button" onClick={() => setSelected(item)}>{item.status === 'SUBMITTED' ? '待复核：打开记录' : '详情、复核与整改'}</button></span>
         </div>)}
       </div>}
     </article>
-    {selected && <TeamWorkDrawer initial={selected} identity={identity} permissions={permissions} onClose={() => setSelected(undefined)} onChanged={resource.reload} />}
+    {selected && <TeamWorkDrawer initial={selected} identity={identity} permissions={permissions} go={go} onClose={() => setSelected(undefined)} onChanged={resource.reload} />}
   </section>
 }
 
-function AttachmentList({ items, disabled, onPreview }: {
+const payloadLabels: Record<string, string> = {
+  expectedAttendance: '应到人数', actualAttendance: '实到人数', appearancePassed: '仪容仪表是否合格',
+  meetingTopic: '晨会主题', meetingNotes: '会议记录', issueFound: '是否发现问题', issueSummary: '问题说明',
+  inspectionResult: '巡查结果', lobbyStatus: '大堂情况', equipmentRoomStatus: '设备间情况',
+  warehouseStatus: '库房情况', correctiveAction: '整改措施', correctiveOwner: '整改负责人',
+  correctiveDeadline: '整改期限', dirtyRoomNumbers: '走脏房房号', roomInspectionRoomNumbers: '查房房号',
+  complaintOccurred: '是否发生客诉', complaintHandling: '客诉处理情况', followUpOrders: '跟进事项',
+  employeeCommunicationOccurred: '是否进行员工沟通', stayoverCommunicationOccurred: '是否进行住客沟通',
+  trainingOccurred: '是否开展培训', cooperationAssessmentOccurred: '是否开展协作评估',
+  coachingSummary: '辅导情况', specialNotes: '特别说明', notes: '备注', summary: '完成说明', issues: '发现问题数',
+}
+
+function unwrapPayloadValue(raw: unknown): unknown {
+  let current = raw
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (typeof current === 'string') {
+      try { current = JSON.parse(current); continue } catch { return current }
+    }
+    if (current && typeof current === 'object' && !Array.isArray(current)) {
+      const wrapped = current as Record<string, unknown>
+      if ((wrapped.type === 'json' || wrapped.type === 'jsonb') && typeof wrapped.value === 'string') {
+        current = wrapped.value
+        continue
+      }
+    }
+    break
+  }
+  return current
+}
+
+function readableValue(raw: unknown): string {
+  const value = unwrapPayloadValue(raw)
+  if (value === null || value === undefined || value === '') return '未填写'
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (Array.isArray(value)) return value.length ? value.map(readableValue).join('、') : '未填写'
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+    return entries.length ? entries.map(([key, child]) => `${payloadLabels[key] ?? '记录内容'}：${readableValue(child)}`).join('；') : '未填写'
+  }
+  return String(value)
+}
+
+function readablePayload(expectation: WorkExpectation, payload: Record<string, unknown>) {
+  const unwrapped = unwrapPayloadValue(payload)
+  if (!unwrapped || typeof unwrapped !== 'object' || Array.isArray(unwrapped)) return []
+  const properties = expectation.formSchema?.properties ?? {}
+  return Object.entries(unwrapped as Record<string, unknown>)
+    .filter(([key]) => !['type', 'value', 'null'].includes(key) && !key.startsWith('_'))
+    .map(([key, raw], index) => ({
+      key,
+      label: properties[key]?.title || payloadLabels[key] || `补充记录 ${index + 1}`,
+      value: readableValue(raw),
+    }))
+}
+
+function AttachmentList({ items, disabled, loadingId, onPreview }: {
   items: WorkRecordAttachment[]
   disabled: boolean
+  loadingId?: string
   onPreview: (item: WorkRecordAttachment) => void
 }) {
   if (!items.length) return <p className="muted">尚未上传现场图片或附件。</p>
   return <div className="attachment-list">{items.map((item) => <div key={item.id}>
     <span className="attachment-icon">▧</span><span><strong>{item.originalName}</strong><small>{formatSize(item.sizeBytes)} · {label(item.scanStatus)} · {formatDate(item.createdAt)}</small></span>
-    <button className="link-button" disabled={disabled} onClick={() => onPreview(item)}>查看</button>
+    <button className="link-button" disabled={disabled} onClick={() => onPreview(item)}>{loadingId === item.id ? '读取中…' : '查看'}</button>
   </div>)}</div>
 }
 
-function TeamWorkDrawer({ initial, identity, permissions, onClose, onChanged }: {
+type DrawerNextAction =
+  | { kind: 'section'; targetId: string; label: string }
+  | { kind: 'route'; view: 'evaluations' | 'tasks'; params: Record<string, string>; label: string }
+
+type DrawerMessage = { tone: 'ok' | 'error'; text: string; next?: DrawerNextAction }
+type AttachmentPreview = { url: string; name: string; mediaType: string }
+
+function resultId(result: unknown) {
+  if (!result || typeof result !== 'object') return ''
+  const row = result as Record<string, unknown>
+  const nested = row.data && typeof row.data === 'object' ? row.data as Record<string, unknown> : undefined
+  return String(row.id ?? row.taskId ?? row.evaluationId ?? nested?.id ?? nested?.taskId ?? nested?.evaluationId ?? '')
+}
+
+export function TeamWorkDrawer({ initial, identity, permissions, go, onClose, onChanged }: {
   initial: WorkExpectation
   identity: RoleContext
   permissions: string[]
+  go: Navigate
   onClose: () => void
   onChanged: () => void
 }) {
@@ -147,87 +272,117 @@ function TeamWorkDrawer({ initial, identity, permissions, onClose, onChanged }: 
   const [taskDueAt, setTaskDueAt] = useState(() => new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 16))
   const [selectedStandard, setSelectedStandard] = useState('')
   const [busy, setBusy] = useState<string>()
-  const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string }>()
-  const [previewUrl, setPreviewUrl] = useState<string>()
+  const [message, setMessage] = useState<DrawerMessage>()
+  const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreview>()
   const standards = expectation.standards ?? []
+  const payloadFields = readablePayload(expectation, record?.payload ?? {})
   const isDemo = resource.source === 'demo'
   const allows = (permission: string) => permissions.includes(permission) || (demoFallbackEnabled && isDemo)
 
   useEffect(() => {
     if (!selectedStandard && standards.length) setSelectedStandard(standards[0].standardVersionId)
   }, [selectedStandard, standards])
-  useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl) }, [previewUrl])
+  useEffect(() => () => { if (attachmentPreview) URL.revokeObjectURL(attachmentPreview.url) }, [attachmentPreview])
 
-  const mutation = async (name: string, action: () => Promise<unknown>, success: string) => {
+  const mutation = async <T,>(name: string, action: () => Promise<T>, success: string | DrawerMessage | ((result: T) => DrawerMessage)) => {
     if (isDemo) { setMessage({ tone: 'error', text: '演示回退仅用于页面走查，不会向业务系统写入数据。' }); return }
     setBusy(name); setMessage(undefined)
     try {
-      await action(); setMessage({ tone: 'ok', text: success }); await resource.reload(); onChanged()
+      const result = await action()
+      setMessage(typeof success === 'function' ? success(result) : typeof success === 'string' ? { tone: 'ok', text: success } : success)
+      await Promise.all([resource.reload(), onChanged()])
     } catch (error) { setMessage({ tone: 'error', text: error instanceof Error ? error.message : '操作失败' }) }
     finally { setBusy(undefined) }
   }
 
+  const runNext = (next: DrawerNextAction) => {
+    if (next.kind === 'section') {
+      document.getElementById(next.targetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      return
+    }
+    onClose()
+    go(next.view, next.params)
+  }
+
   const review = (outcome: 'APPROVED' | 'REJECTED') => {
     if (!record) return
-    void mutation(`review-${outcome}`, () => reviewWorkRecord(identity, record.id, outcome, reviewReason, record.rowVersion), outcome === 'APPROVED' ? '工作记录复核通过。' : '工作记录已退回。')
+    void mutation(`review-${outcome}`, () => reviewWorkRecord(identity, record.id, outcome, reviewReason, record.rowVersion), outcome === 'APPROVED'
+      ? { tone: 'ok', text: '工作记录已复核通过。下一步可按工作标准创建评价。', next: { kind: 'section', targetId: 'standard-evaluation-action', label: '继续创建标准评价' } }
+      : { tone: 'ok', text: '工作记录已退回补充，员工可在“我的工作”中补齐说明和证据。' })
   }
 
   const createTask = () => {
-    if (!record?.targetOrgUnitId || !record.positionAssignmentId || !identity.businessActorAssignmentId) {
-      setMessage({ tone: 'error', text: '记录缺少目标组织、执行任职或当前验收任职，无法安全创建任务。' }); return
+    if (!record?.targetOrgUnitId || !record.positionAssignmentId) {
+      setMessage({ tone: 'error', text: '记录缺少目标组织或执行任职，无法创建整改任务。' }); return
     }
-    if (record.positionAssignmentId === identity.businessActorAssignmentId) {
-      setMessage({ tone: 'error', text: '负责人和验收人不能是同一任职。' }); return
-    }
+    const reviewerAssignmentId = identity.businessActorAssignmentId && record.positionAssignmentId !== identity.businessActorAssignmentId
+      ? identity.businessActorAssignmentId
+      : undefined
     void mutation('task', () => createCorrectiveTask(identity, {
-      orgUnitId: record.targetOrgUnitId!, assigneeAssignmentId: record.positionAssignmentId!, reviewerAssignmentId: identity.businessActorAssignmentId!,
-      creatorAssignmentId: identity.businessActorAssignmentId!,
+      orgUnitId: record.targetOrgUnitId!, assigneeAssignmentId: record.positionAssignmentId!, reviewerAssignmentId,
+      creatorAssignmentId: identity.businessActorAssignmentId,
       standardVersionId: selectedStandard || undefined, workRecordId: record.id, title: taskTitle,
       description: taskDescription, priority: taskPriority, dueAt: taskDueAt ? new Date(taskDueAt).toISOString() : undefined,
-    }), '整改任务已创建并派发，接收人可立即在任务与通知中心查看。')
+    }), (result) => {
+      const taskId = resultId(result)
+      return {
+        tone: 'ok',
+        text: '整改任务已创建并派发，接收人可立即在任务与通知中心查看。',
+        next: { kind: 'route', view: 'tasks', params: { view: 'team', ...(taskId ? { taskId } : {}) }, label: '进入任务中心' },
+      }
+    })
   }
 
   const preview = async (attachment: WorkRecordAttachment) => {
     if (isDemo) { setMessage({ tone: 'error', text: '演示附件没有真实文件内容。' }); return }
     setBusy(`preview-${attachment.id}`)
+    setMessage(undefined)
     try {
       const blob = await loadAttachmentContent(identity, attachment.id)
-      if (previewUrl) URL.revokeObjectURL(previewUrl)
-      setPreviewUrl(URL.createObjectURL(blob))
+      if (attachmentPreview) URL.revokeObjectURL(attachmentPreview.url)
+      setAttachmentPreview({ url: URL.createObjectURL(blob), name: attachment.originalName, mediaType: attachment.mediaType || blob.type })
     } catch (error) { setMessage({ tone: 'error', text: error instanceof Error ? error.message : '附件读取失败' }) }
     finally { setBusy(undefined) }
   }
 
   const evaluate = () => {
     if (!record || !selectedStandard) { setMessage({ tone: 'error', text: '必须选择工作包绑定的已发布标准版本。' }); return }
-    void mutation('evaluation', () => createWorkRecordEvaluation(identity, { record, standardVersionId: selectedStandard }), '标准评价已创建，可进入评价中心查看逐项结果。')
+    void mutation('evaluation', () => createWorkRecordEvaluation(identity, { record, standardVersionId: selectedStandard }), (result) => {
+      const evaluationId = resultId(result)
+      const params: Record<string, string> = evaluationId ? { evaluationId } : {}
+      return {
+        tone: 'ok',
+        text: '标准评价已创建，可进入评价中心查看逐项结果。',
+        next: { kind: 'route', view: 'evaluations', params, label: '进入评价中心' },
+      }
+    })
   }
 
   return <div className="drawer-backdrop"><aside className="drawer p0-drawer" role="dialog" aria-modal="true">
-    <header><div><span className="panel-kicker">TEAM WORK DETAIL</span><h2>{expectation.title}</h2><small>{expectation.targetOrgName} · {expectation.assigneeName}</small></div><button className="close" onClick={onClose}>×</button></header>
+    <header><div><span className="panel-kicker">团队工作详情</span><h2>{expectation.title}</h2><small>{expectation.hotelName && expectation.hotelName !== expectation.targetOrgName ? `${expectation.hotelName} · ` : ''}{expectation.targetOrgName} · {expectation.assigneeName}</small></div><button className="close" onClick={onClose} aria-label="关闭详情">×</button></header>
     <div className="drawer-body">
       <LoadingState loading={resource.loading} error={resource.error} retry={resource.reload} />
       {!resource.loading && !resource.error && <>
         <div className="task-summary"><span><small>工作状态</small><Status value={expectation.status} /></span><span><small>评价结果</small>{expectation.evaluationOutcome ? <Status value={expectation.evaluationOutcome} /> : '—'}</span><span><small>截止时间</small><strong>{formatDate(expectation.dueAt)}</strong></span></div>
+        {message && <div role="status" className={`team-action-feedback ${message.tone}`}><span><strong>{message.tone === 'ok' ? '操作成功' : '操作未完成'}</strong><small>{message.text}</small></span>{message.next ? <button type="button" className="secondary" onClick={() => runNext(message.next!)}>{message.next.label} →</button> : null}</div>}
         {!record ? <div className="inline-warning">该工作期望尚未形成可复核的工作记录。</div> : <>
-          <section className="detail-section"><h3>记录事实</h3><dl><div><dt>提交员工</dt><dd>{record.employeeName}</dd></div><div><dt>执行岗位</dt><dd>{record.positionName}</dd></div><div><dt>记录状态</dt><dd>{label(record.status)}</dd></div><div><dt>提交时间</dt><dd>{formatDate(record.submittedAt)}</dd></div></dl><div className="payload-grid">{Object.entries(record.payload).map(([key, raw]) => <span key={key}><small>{key}</small><strong>{typeof raw === 'object' ? JSON.stringify(raw) : String(raw ?? '—')}</strong></span>)}</div>{record.reviewReason && <div className="inline-warning">上次复核意见：{record.reviewReason}</div>}</section>
+          <section className="detail-section"><h3>记录事实</h3><dl><div><dt>提交员工</dt><dd>{record.employeeName}</dd></div><div><dt>执行岗位</dt><dd>{record.positionName}</dd></div><div><dt>记录状态</dt><dd>{label(record.status)}</dd></div><div><dt>提交时间</dt><dd>{formatDate(record.submittedAt)}</dd></div></dl>{payloadFields.length ? <div className="payload-grid">{payloadFields.map((field) => <span key={field.key}><small>{field.label}</small><strong>{field.value}</strong></span>)}</div> : <p className="muted">本次提交没有额外的表单记录。</p>}{record.reviewReason && <div className="inline-warning">上次复核意见：{record.reviewReason}</div>}</section>
 
           <section className="detail-section"><h3>现场图片与附件</h3>
             <p className="muted">团队工作仅复核员工提交的证据；附件上传、补充和删除由记录所属员工在“我的工作”中完成。</p>
-            <AttachmentList items={record.attachments} disabled={!!busy || isDemo} onPreview={preview} />
-            {previewUrl && <div className="attachment-preview"><img src={previewUrl} alt="现场附件预览" /><button className="close" onClick={() => { URL.revokeObjectURL(previewUrl); setPreviewUrl(undefined) }}>×</button></div>}
+            <AttachmentList items={record.attachments} disabled={!!busy || isDemo} loadingId={busy?.startsWith('preview-') ? busy.slice('preview-'.length) : undefined} onPreview={preview} />
           </section>
 
-          {allows('work-record.review') && <section className="action-box"><h3>工作记录复核</h3><p className="muted">复核只判断记录是否完整，不替代标准评价和任务验收。</p><label>复核意见<textarea rows={2} value={reviewReason} onChange={(event) => setReviewReason(event.target.value)} placeholder="退回时必须填写原因" /></label><div><button className="primary" disabled={!!busy || record.status !== 'SUBMITTED' || isDemo} onClick={() => review('APPROVED')}>复核通过</button><button className="danger-button" disabled={!!busy || record.status !== 'SUBMITTED' || !reviewReason.trim() || isDemo} onClick={() => review('REJECTED')}>退回补充</button></div></section>}
+          {allows('work-record.review') && <section className="action-box" id="work-review-action"><h3>工作记录复核</h3><p className="muted">复核只判断记录是否完整，不替代标准评价和任务验收。</p>{record.status === 'SUBMITTED' ? <><label>复核意见<textarea rows={2} value={reviewReason} onChange={(event) => setReviewReason(event.target.value)} placeholder="退回时必须填写原因" /></label><div><button className="primary" disabled={!!busy || isDemo} onClick={() => review('APPROVED')}>{busy === 'review-APPROVED' ? '处理中…' : '复核通过'}</button><button className="danger-button" disabled={!!busy || !reviewReason.trim() || isDemo} onClick={() => review('REJECTED')}>{busy === 'review-REJECTED' ? '处理中…' : '退回补充'}</button></div></> : <div className="inline-success">该记录已完成复核，无需重复操作。</div>}</section>}
 
-          {allows('evaluation.manual-review') && <section className="action-box"><h3>创建标准评价</h3><label>评价依据<select value={selectedStandard} onChange={(event) => setSelectedStandard(event.target.value)}><option value="">请选择已发布标准</option>{standards.map((standard) => <option value={standard.standardVersionId} key={standard.standardVersionId}>{standard.standardCode} · {standard.title} V{standard.versionNo}</option>)}</select></label>{!standards.length && <div className="inline-warning">工作包条目尚未返回绑定标准，不能由页面猜测评价依据。</div>}<div><button className="primary" disabled={!!busy || !selectedStandard || isDemo} onClick={evaluate}>{busy === 'evaluation' ? '创建中…' : '按标准创建评价'}</button></div></section>}
+          {allows('evaluation.manual-review') && <section className="action-box" id="standard-evaluation-action"><h3>创建标准评价</h3><label>评价依据<select value={selectedStandard} onChange={(event) => setSelectedStandard(event.target.value)}><option value="">请选择已发布标准</option>{standards.map((standard) => <option value={standard.standardVersionId} key={standard.standardVersionId}>{standard.title}（第{standard.versionNo}版）</option>)}</select></label>{!standards.length && <div className="inline-warning">工作包条目尚未返回绑定标准，不能由页面猜测评价依据。</div>}<div><button className="primary" disabled={!!busy || !selectedStandard || isDemo} onClick={evaluate}>{busy === 'evaluation' ? '创建中…' : '按标准创建评价'}</button></div></section>}
 
-          {allows('task.create') && <section className="action-box"><h3>创建整改任务</h3><div className="form-grid"><label>任务标题<input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} /></label><label>优先级<select value={taskPriority} onChange={(event) => setTaskPriority(event.target.value)}><option value="LOW">低</option><option value="NORMAL">普通</option><option value="HIGH">高</option><option value="URGENT">紧急</option></select></label><label>完成时限<input type="datetime-local" value={taskDueAt} onChange={(event) => setTaskDueAt(event.target.value)} /></label></div><label>整改要求<textarea rows={3} value={taskDescription} onChange={(event) => setTaskDescription(event.target.value)} /></label><div><button className="primary" disabled={!!busy || !taskTitle.trim() || !taskDescription.trim() || isDemo} onClick={createTask}>{busy === 'task' ? '创建中…' : '创建整改任务'}</button></div></section>}
+          {allows('task.create') && <section className="action-box" id="corrective-task-action"><h3>创建整改任务</h3><div className="form-grid"><label>任务标题<input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} /></label><label>优先级<select value={taskPriority} onChange={(event) => setTaskPriority(event.target.value)}><option value="LOW">低</option><option value="NORMAL">普通</option><option value="HIGH">高</option><option value="URGENT">紧急</option></select></label><label>完成时限<input type="datetime-local" value={taskDueAt} onChange={(event) => setTaskDueAt(event.target.value)} /></label></div><label>整改要求<textarea rows={3} value={taskDescription} onChange={(event) => setTaskDescription(event.target.value)} /></label><div><button className="primary" disabled={!!busy || !taskTitle.trim() || !taskDescription.trim() || isDemo} onClick={createTask}>{busy === 'task' ? '创建中…' : '创建整改任务'}</button></div></section>}
         </>}
         {isDemo && <div className="inline-warning">当前为演示回退：所有P0操作入口可见，但写操作被保护性禁用。</div>}
-        {message && <div className={message.tone === 'ok' ? 'inline-success' : 'inline-error'}>{message.text}</div>}
       </>}
     </div>
+    {attachmentPreview && <div className="attachment-lightbox" role="dialog" aria-modal="true" aria-label={`查看附件：${attachmentPreview.name}`}><div><header><span><strong>{attachmentPreview.name}</strong><small>现场证据预览</small></span><button type="button" className="close" onClick={() => setAttachmentPreview(undefined)} aria-label="关闭附件预览">×</button></header>{attachmentPreview.mediaType.startsWith('image/') ? <img src={attachmentPreview.url} alt={attachmentPreview.name} /> : attachmentPreview.mediaType === 'application/pdf' ? <iframe src={attachmentPreview.url} title={attachmentPreview.name} /> : <div className="attachment-download"><p>该格式不能在浏览器内直接预览。</p><a className="primary" href={attachmentPreview.url} download={attachmentPreview.name}>下载附件</a></div>}</div></div>}
   </aside></div>
 }
 
@@ -254,7 +409,7 @@ export function HotelDashboardPage({ identity, routeParams, go }: { identity: Ro
   const overdue = dashboard.incompleteTasks.filter((task) => ['OVERDUE', 'ESCALATED'].includes(task.slaStatus)).length
   const highRisks = dashboard.risks.filter((risk) => ['HIGH', 'URGENT'].includes(risk.severity)).length
   const loading = hotelsResource.loading || (!!hotelId && resource.loading)
-  const error = hotelsResource.error || resource.error || (!hotelsResource.loading && !hotelId ? '当前账号没有可访问的门店驾驶舱。' : undefined)
+  const error = hotelsResource.error || resource.error || (!hotelsResource.loading && !hotelId ? '当前账号没有可访问的门店工作台。' : undefined)
   const openTask = (task: ManagementTask) => go('tasks', { view: 'team', status: 'ACTIVE', hotelId, taskId: task.id })
   const openRisk = (risk: typeof dashboard.risks[number]) => {
     const common = { hotelId }
@@ -265,7 +420,7 @@ export function HotelDashboardPage({ identity, routeParams, go }: { identity: Ro
   }
 
   return <section className="page-section">
-    <PageHeader eyebrow="HOTEL MANAGEMENT COCKPIT" title={`${dashboard.hotel.name}门店驾驶舱`} description="店总视角聚合经营指标、风险事项与未完成任务；所有明细仍回到原始记录和任务。" source={resource.source} actions={hotels.length > 1 ? <label className="dashboard-hotel-select"><span>查看门店</span><select value={hotelId} onChange={(event) => go('hotel-dashboard', { hotelId: event.target.value })}>{hotels.map((hotel) => <option value={hotel.id} key={hotel.id}>{hotel.name}</option>)}</select></label> : undefined} />
+    <PageHeader eyebrow="HOTEL WORKBENCH" title={`${dashboard.hotel.name}工作台`} description="店总视角聚合经营指标、风险事项与未完成任务；所有明细仍回到原始记录和任务。" source={resource.source} actions={hotels.length > 1 ? <label className="dashboard-hotel-select"><span>查看门店</span><select value={hotelId} onChange={(event) => go('hotel-dashboard', { hotelId: event.target.value })}>{hotels.map((hotel) => <option value={hotel.id} key={hotel.id}>{hotel.name}</option>)}</select></label> : undefined} />
     <LoadingState loading={loading} error={error} retry={() => void Promise.all([hotelsResource.reload(), resource.reload()])} />
     {!loading && !error && !!hotelId && <>
       <section className="metrics-grid p0-dashboard-metrics"><button type="button" className="metric metric-action blue" onClick={() => go('team-work', { hotelId })}><div>员</div><span>在岗员工<strong>{dashboard.activeEmployeeCount}</strong><small>{dashboard.hotel.city ?? '当前门店'} · {dashboard.hotel.roomCount ?? '—'}间客房</small></span></button>{sections.has('WORK_COMPLETION') && <button type="button" className="metric metric-action teal" onClick={() => go('team-work', { hotelId, status: 'SUBMITTED' })}><div>工</div><span>今日工作提交<strong>{dashboard.todayWorkSubmissionCount}</strong><small>岗位工作记录</small></span></button>}{sections.has('RISKS') && <button type="button" className="metric metric-action gold" onClick={() => go('team-work', { hotelId, status: 'EXCEPTION' })}><div>险</div><span>开放风险<strong>{dashboard.risks.length}</strong><small>{highRisks}项高风险</small></span></button>}{sections.has('INCOMPLETE_TASKS') && <button type="button" className="metric metric-action violet" onClick={() => go('tasks', { view: 'team', status: 'ACTIVE', hotelId })}><div>任</div><span>未完成任务<strong>{dashboard.incompleteTasks.length}</strong><small>{overdue}项已逾期/升级</small></span></button>}</section>

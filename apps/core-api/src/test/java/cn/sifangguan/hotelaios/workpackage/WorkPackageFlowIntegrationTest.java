@@ -196,9 +196,9 @@ class WorkPackageFlowIntegrationTest {
                         now.minusHours(1), now.plusHours(8))), 201);
         String expectationId = duty.path("expectations").path("createdIds").get(0).asText();
 
-        mockMvc.perform(identity(get("/api/v1/my/work-expectations"), FRONT_ACCOUNT))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].id").value(expectationId));
+        JsonNode assignedExpectations = response(
+                identity(get("/api/v1/my/work-expectations"), FRONT_ACCOUNT), 200);
+        assertThat(assignedExpectations.findValuesAsText("id")).contains(expectationId);
 
         JsonNode draft = response(identity(post("/api/v1/work-data/records"), FRONT_ACCOUNT)
                 .contentType(MediaType.APPLICATION_JSON)

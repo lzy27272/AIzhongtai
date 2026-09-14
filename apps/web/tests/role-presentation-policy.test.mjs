@@ -96,18 +96,18 @@ test('account-wide semantics use the backend exact role allowlist, never UI alia
   assert.equal(resolveFullAccountPresentationRole(['GROUP_ADMIN', 'GENERAL_MANAGER']), undefined)
 })
 
-test('mobile five-tab labels and targets match the frozen role matrix', () => {
+test('mobile five-tab labels and targets match the consolidated workbench matrix', () => {
   const cases = {
-    FRONT_DESK: [['工作台', 'workbench'], ['待办', 'tasks'], ['日报', 'daily-reports-my'], ['消息', 'notifications'], ['我的', 'all-functions']],
-    FRONT_OFFICE_SUPERVISOR: [['工作台', 'workbench'], ['待办', 'tasks'], ['团队', 'team-work'], ['消息', 'notifications'], ['我的', 'all-functions']],
-    ASSISTANT_GENERAL_MANAGER: [['工作台', 'workbench'], ['待办', 'tasks'], ['运营', 'daily-operations'], ['消息', 'notifications'], ['我的', 'all-functions']],
-    GENERAL_MANAGER: [['门店', 'hotel-dashboard'], ['工作', 'my-work'], ['运营', 'daily-operations'], ['消息', 'notifications'], ['我的', 'all-functions']],
-    OTA_OPERATION_MANAGER: [['区域', 'operations-dashboard'], ['待办', 'tasks'], ['运营', 'daily-operations'], ['消息', 'notifications'], ['我的', 'all-functions']],
-    HR_KPI_ADMIN: [['人事', 'organization'], ['待办', 'tasks'], ['KPI', 'kpi-center'], ['消息', 'notifications'], ['我的', 'all-functions']],
-    GROUP_VICE_PRESIDENT: [['集团', 'workbench'], ['待办', 'tasks'], ['经营', 'daily-operations'], ['消息', 'notifications'], ['我的', 'all-functions']],
-    GROUP_CHAIRMAN: [['集团', 'workbench'], ['任务', 'tasks'], ['经营', 'daily-operations'], ['消息', 'notifications'], ['我的', 'account-self-service']],
-    CEO: [['集团', 'workbench'], ['决策', 'investments'], ['经营', 'daily-operations'], ['消息', 'notifications'], ['我的', 'all-functions']],
-    PLATFORM_ADMIN: [['平台', 'workbench'], ['待办', 'tasks'], ['配置', 'organization'], ['消息', 'notifications'], ['我的', 'all-functions']],
+    FRONT_DESK: [['工作台', 'workbench'], ['日报', 'daily-reports-my'], ['工作', 'my-work'], ['KPI', 'kpi-center'], ['我的', 'all-functions']],
+    FRONT_OFFICE_SUPERVISOR: [['工作台', 'workbench'], ['日报', 'daily-reports-my'], ['团队', 'team-work'], ['KPI', 'kpi-center'], ['我的', 'all-functions']],
+    ASSISTANT_GENERAL_MANAGER: [['工作台', 'workbench'], ['日报', 'daily-reports-my'], ['日运营', 'daily-operations'], ['KPI', 'kpi-center'], ['我的', 'all-functions']],
+    GENERAL_MANAGER: [['工作台', 'workbench'], ['日报', 'daily-reports-my'], ['日运营', 'daily-operations'], ['KPI', 'kpi-center'], ['我的', 'all-functions']],
+    OTA_OPERATION_MANAGER: [['工作台', 'workbench'], ['日报', 'daily-reports-my'], ['日运营', 'daily-operations'], ['KPI', 'kpi-center'], ['我的', 'all-functions']],
+    HR_KPI_ADMIN: [['工作台', 'workbench'], ['人员', 'organization'], ['入职', 'wecom-onboarding'], ['KPI', 'kpi-center'], ['我的', 'all-functions']],
+    GROUP_VICE_PRESIDENT: [['工作台', 'workbench'], ['日报', 'daily-reports-my'], ['日运营', 'daily-operations'], ['KPI', 'kpi-center'], ['我的', 'all-functions']],
+    GROUP_CHAIRMAN: [['工作台', 'workbench'], ['日报', 'daily-reports-my'], ['日运营', 'daily-operations'], ['KPI', 'kpi-center'], ['我的', 'account-self-service']],
+    CEO: [['工作台', 'workbench'], ['日报', 'daily-reports-my'], ['日运营', 'daily-operations'], ['KPI', 'kpi-center'], ['我的', 'all-functions']],
+    PLATFORM_ADMIN: [['工作台', 'workbench'], ['工作包', 'work-packages'], ['系统配置', 'organization'], ['规则', 'rules'], ['我的', 'all-functions']],
   }
   for (const [roleCode, expected] of Object.entries(cases)) {
     const actual = resolveRolePresentationPolicy(roleCode).mobileTabs.map(({ label, target }) => [label, target])
@@ -116,7 +116,7 @@ test('mobile five-tab labels and targets match the frozen role matrix', () => {
 
   const ceoTabs = resolveRolePresentationPolicy('CEO').mobileTabs
   assert.equal(ceoTabs[1].slot, 'secondary')
-  assert.equal(ceoTabs[1].target, 'investments')
+  assert.equal(ceoTabs[1].target, 'daily-reports-my')
   assert.deepEqual(ceoTabs.map((tab) => tab.slot), ['primary', 'secondary', 'domain', 'notifications', 'profile'])
 })
 

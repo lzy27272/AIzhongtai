@@ -86,10 +86,15 @@ export type WorkExpectation = {
   itemName: string
   status: string
   businessDate: string
+  periodKey?: string
+  periodType?: string
   availableAt?: string
   dueAt?: string
   targetOrgName: string
+  hotelOrgUnitId?: string
+  hotelName?: string
   assigneeName: string
+  positionName?: string
   assignmentId?: string
   orgUnitId?: string
   employeeId?: string
@@ -114,6 +119,7 @@ export type WorkExpectation = {
   workPackageVersionId?: string
   workPackageItemId?: string
   recordId?: string
+  latestSubmittedAt?: string
   rowVersion?: number
   evaluationOutcome?: string
   standards?: WorkStandardReference[]

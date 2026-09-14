@@ -324,7 +324,7 @@ public class AttachmentService {
     @Transactional(readOnly = true)
     public List<Map<String, Object>> list(UUID workRecordId) {
         TenantPrincipal principal = prepare();
-        accessPolicy.requirePermission("work-record.read");
+        accessPolicy.requireAnyPermission("work-record.read", "work-record.review", "work-record.team-read");
         RecordTarget record = recordTarget(principal, workRecordId);
         accessPolicy.requireOrgScope(record.targetOrgUnitId());
         return jdbc.queryForList("""
@@ -342,7 +342,7 @@ public class AttachmentService {
     @Transactional(readOnly = true)
     public Download download(UUID attachmentId) {
         TenantPrincipal principal = prepare();
-        accessPolicy.requirePermission("work-record.read");
+        accessPolicy.requireAnyPermission("work-record.read", "work-record.review", "work-record.team-read");
         Map<String, Object> attachment = jdbc.queryForMap("""
                 select a.object_key, a.original_name, a.media_type, a.size_bytes, a.scan_status,
                        w.target_org_unit_id

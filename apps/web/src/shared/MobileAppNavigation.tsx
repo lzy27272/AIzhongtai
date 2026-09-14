@@ -8,7 +8,7 @@ export type FunctionNavigationItem = {
   group?: string
 }
 
-export type MobileNavigationIcon = 'workbench' | 'tasks' | 'reports' | 'notifications' | 'profile'
+export type MobileNavigationIcon = 'workbench' | 'tasks' | 'reports' | 'operations' | 'performance' | 'notifications' | 'profile'
 
 export type MobileNavigationItem = {
   key: string
@@ -33,6 +33,8 @@ function TabIcon({ icon }: { icon: MobileNavigationIcon }) {
   if (icon === 'workbench') return <svg {...common}><path d="M3.5 10.2 12 3.5l8.5 6.7v9.3a1 1 0 0 1-1 1h-5v-6h-5v6h-5a1 1 0 0 1-1-1z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" /></svg>
   if (icon === 'tasks') return <svg {...common}><rect x="5" y="4.5" width="14" height="16" rx="2" stroke="currentColor" strokeWidth="1.8" /><path d="M9 4.5v-1h6v1M8.5 10.5l1.5 1.5 3-3M8.5 16h7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
   if (icon === 'reports') return <svg {...common}><path d="M6 3.5h9l3 3v14H6z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" /><path d="M15 3.5v3h3M9 11h6M9 15h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+  if (icon === 'operations') return <svg {...common}><path d="M4 19.5V10l8-5.5 8 5.5v9.5z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" /><path d="M8 19.5v-5h8v5M8 10h.01M12 10h.01M16 10h.01" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+  if (icon === 'performance') return <svg {...common}><path d="M5 19V9M12 19V4M19 19v-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /><path d="M3.5 19.5h17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
   if (icon === 'notifications') return <svg {...common}><path d="M5 10a7 7 0 0 1 14 0v4l1.5 2.5h-17L5 14zM9.5 20h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
   return <svg {...common}><circle cx="12" cy="8" r="3.5" stroke="currentColor" strokeWidth="1.8" /><path d="M5.5 20a6.5 6.5 0 0 1 13 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
 }
@@ -68,7 +70,7 @@ export function MobileBottomNavigation({
   </nav>
 }
 
-const groupOrder = ['日常工作', '管理驾驶舱', '标准与工作', '日报与运营', '行政人事', '管理闭环', '投资决策', '系统配置', '其他功能']
+const groupOrder = ['日常工作', '标准与工作', '日报与运营', '行政人事', '管理闭环', '投资决策', '系统配置', '其他功能']
 
 function displayGroup(item: FunctionNavigationItem): string {
   if (['my-work', 'tasks', 'notifications'].includes(item.id)) return '日常工作'

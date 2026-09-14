@@ -590,7 +590,7 @@ public class WorkPackageService {
 
     @Transactional(readOnly = true)
     public List<Map<String, Object>> teamExpectations(String status, LocalDate businessDate) {
-        accessPolicy.requirePermission("work-record.review");
+        accessPolicy.requireAnyPermission("work-record.review", "work-record.team-read");
         return expectations(status, null, null, businessDate, false);
     }
 
@@ -603,7 +603,8 @@ public class WorkPackageService {
             boolean mineOnly
     ) {
         TenantPrincipal principal = prepare();
-        accessPolicy.requirePermission("work-package.read");
+        accessPolicy.requireAnyPermission(
+                "work-package.read", "work-record.read", "work-record.review", "work-record.team-read");
         MapSqlParameterSource params = base(principal).addValue("actorId", principal.actorId());
         List<String> predicates = new ArrayList<>();
         if (status != null && !status.isBlank()) {
@@ -616,7 +617,14 @@ public class WorkPackageService {
         }
         if (targetOrgUnitId != null) {
             accessPolicy.requireOrgScope(targetOrgUnitId);
-            predicates.add("x.target_org_unit_id = :targetOrgUnitId");
+            predicates.add("""
+                    exists (
+                      select 1 from org_unit_closure requested_scope
+                      where requested_scope.tenant_id = x.tenant_id
+                        and requested_scope.ancestor_id = :targetOrgUnitId
+                        and requested_scope.descendant_id = x.target_org_unit_id
+                    )
+                    """);
             params.addValue("targetOrgUnitId", targetOrgUnitId);
         }
         if (businessDate != null) {
@@ -677,15 +685,17 @@ public class WorkPackageService {
                        x.position_assignment_id, e.id as employee_id, e.name as employee_name, p.name as position_name,
                        x.target_org_unit_id, o.name as target_org_unit_name,
                        i.id as work_package_item_id, i.item_code, i.name as item_name, i.item_type,
+                       i.period_type,
                        i.form_version_id, i.submission_policy, i.reminder_policy, i.report_policy,
                        i.applicability_policy, i.execution_policy,
+                       hotel_context.id as hotel_org_unit_id, hotel_context.name as hotel_name,
                        coalesce(h.guest_room_floor_count, 1) as guest_room_floor_count,
                        delegation.delegate_assignment_id, delegated_employee.name as delegated_employee_name,
                        delegation.owner_resting,
                        d.id as work_package_id, d.code as work_package_code, d.name as work_package_name,
                        v.id as work_package_version_id, v.version_no,
-                       (select max(w.attempt_no) from work_record w
-                         where w.tenant_id = x.tenant_id and w.work_expectation_id = x.id) as latest_attempt_no
+                       latest_record.id as record_id, latest_record.attempt_no as latest_attempt_no,
+                       latest_record.submitted_at as latest_submitted_at
                 from work_expectation x
                 join work_package_item i on i.tenant_id = x.tenant_id and i.id = x.work_package_item_id
                 join work_package_version v on v.tenant_id = i.tenant_id and v.id = i.work_package_version_id
@@ -694,8 +704,21 @@ public class WorkPackageService {
                 join employee e on e.tenant_id = a.tenant_id and e.id = a.employee_id
                 join position_definition p on p.tenant_id = a.tenant_id and p.id = a.position_id
                 join org_unit o on o.tenant_id = x.tenant_id and o.id = x.target_org_unit_id
+                left join lateral (
+                    select hotel.id, hotel.name
+                    from org_unit_closure hotel_link
+                    join org_unit hotel
+                      on hotel.tenant_id = hotel_link.tenant_id
+                     and hotel.id = hotel_link.ancestor_id
+                     and hotel.unit_type = 'HOTEL'
+                    where hotel_link.tenant_id = x.tenant_id
+                      and hotel_link.descendant_id = x.target_org_unit_id
+                    order by hotel_link.depth
+                    limit 1
+                ) hotel_context on true
                 left join hotel_profile h
-                  on h.tenant_id = x.tenant_id and h.org_unit_id = x.target_org_unit_id
+                  on h.tenant_id = x.tenant_id
+                 and h.org_unit_id = coalesce(hotel_context.id, x.target_org_unit_id)
                 left join work_expectation_delegation delegation
                   on delegation.tenant_id = x.tenant_id
                  and delegation.work_expectation_id = x.id and delegation.status = 'ACTIVE'
@@ -705,17 +728,33 @@ public class WorkPackageService {
                 left join employee delegated_employee
                   on delegated_employee.tenant_id = delegated_assignment.tenant_id
                  and delegated_employee.id = delegated_assignment.employee_id
+                left join lateral (
+                    select w.id, w.attempt_no, w.submitted_at
+                    from work_record w
+                    where w.tenant_id = x.tenant_id
+                      and w.work_expectation_id = x.id
+                    order by w.attempt_no desc, w.created_at desc
+                    limit 1
+                ) latest_record on true
                 where x.tenant_id = :tenantId
-                """ + visibility + filters + " order by x.due_at, x.created_at limit 500", params);
+                """ + visibility + filters + " order by case "
+                + "when x.business_date = current_date and x.status = 'SUBMITTED' then 0 "
+                + "when x.business_date = current_date then 1 "
+                + "when i.period_type <> 'DAY' and x.status in ('OVERDUE', 'MISSED', 'FAILED') then 2 "
+                + "when x.status = 'SUBMITTED' then 3 else 4 end, "
+                + "latest_record.submitted_at desc nulls last, x.business_date desc, "
+                + "x.due_at desc, x.created_at desc limit 500", params);
     }
 
     @Transactional(readOnly = true)
     public Map<String, Object> expectationDetail(UUID expectationId) {
         TenantPrincipal principal = prepare();
-        accessPolicy.requirePermission("work-package.read");
+        accessPolicy.requireAnyPermission(
+                "work-package.read", "work-record.read", "work-record.review", "work-record.team-read");
         MapSqlParameterSource params = base(principal).addValue("expectationId", expectationId);
         Map<String, Object> result = new LinkedHashMap<>(jdbc.queryForMap("""
-                select x.*, i.item_code, i.name as item_name, i.item_type, i.form_version_id,
+                select x.*, i.item_code, i.name as item_name, i.item_type, i.period_type,
+                       i.form_version_id,
                        i.work_window_start, i.work_window_end, i.due_local_time,
                        i.grace_minutes, i.review_mode, i.submission_policy,
                        i.reminder_policy, i.report_policy, i.applicability_policy,
@@ -725,6 +764,7 @@ public class WorkPackageService {
                        d.id as work_package_id, d.code as work_package_code, d.name as work_package_name,
                        v.id as work_package_version_id, v.version_no,
                        e.name as employee_name, p.name as position_name, o.name as target_org_unit_name,
+                       hotel_context.id as hotel_org_unit_id, hotel_context.name as hotel_name,
                        fd.code as form_code, fd.name as form_name, fv.json_schema as form_schema
                 from work_expectation x
                 join work_package_item i on i.tenant_id = x.tenant_id and i.id = x.work_package_item_id
@@ -736,8 +776,21 @@ public class WorkPackageService {
                 join employee e on e.tenant_id = a.tenant_id and e.id = a.employee_id
                 join position_definition p on p.tenant_id = a.tenant_id and p.id = a.position_id
                 join org_unit o on o.tenant_id = x.tenant_id and o.id = x.target_org_unit_id
+                left join lateral (
+                    select hotel.id, hotel.name
+                    from org_unit_closure hotel_link
+                    join org_unit hotel
+                      on hotel.tenant_id = hotel_link.tenant_id
+                     and hotel.id = hotel_link.ancestor_id
+                     and hotel.unit_type = 'HOTEL'
+                    where hotel_link.tenant_id = x.tenant_id
+                      and hotel_link.descendant_id = x.target_org_unit_id
+                    order by hotel_link.depth
+                    limit 1
+                ) hotel_context on true
                 left join hotel_profile h
-                  on h.tenant_id = x.tenant_id and h.org_unit_id = x.target_org_unit_id
+                  on h.tenant_id = x.tenant_id
+                 and h.org_unit_id = coalesce(hotel_context.id, x.target_org_unit_id)
                 left join work_expectation_delegation delegation
                   on delegation.tenant_id = x.tenant_id
                  and delegation.work_expectation_id = x.id and delegation.status = 'ACTIVE'

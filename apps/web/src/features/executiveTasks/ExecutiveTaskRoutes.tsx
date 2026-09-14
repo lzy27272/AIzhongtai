@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { Navigate, RoleContext, RouteParams } from '../../domain'
 import { hasPermission, permissions } from '../../app/permissions'
 import { useResource } from '../../useResource'
@@ -56,6 +56,9 @@ export function ExecutiveTaskRoutes({
     undefined,
   )
   const [creating, setCreating] = useState(false)
+  useEffect(() => {
+    if (routeParams.create === 'true' && canAssign) setCreating(true)
+  }, [canAssign, routeParams.create])
   const [targetAssignmentId, setTargetAssignmentId] = useState('')
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')

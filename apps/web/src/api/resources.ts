@@ -161,10 +161,15 @@ function normalizeExpectation(item: JsonObject): WorkExpectation {
     itemName: text(item, ['itemName', 'workItemName', 'item_name', 'work_item_name'], '工作项'),
     status: text(item, ['status'], 'PENDING'),
     businessDate: text(item, ['businessDate', 'business_date'], ''),
+    periodKey: text(item, ['periodKey', 'period_key'], '') || undefined,
+    periodType: text(item, ['periodType', 'period_type'], '') || undefined,
     availableAt: text(item, ['availableAt', 'available_at'], '') || undefined,
     dueAt: text(item, ['dueAt', 'due_at'], '') || undefined,
     targetOrgName: text(item, ['targetOrgName', 'targetOrgUnitName', 'orgUnitName', 'target_org_name', 'target_org_unit_name'], '当前组织'),
+    hotelOrgUnitId: text(item, ['hotelOrgUnitId', 'hotel_org_unit_id'], '') || undefined,
+    hotelName: text(item, ['hotelName', 'hotel_name'], '') || undefined,
     assigneeName: text(item, ['assigneeName', 'employeeName', 'employee_name', 'assignee_name'], '当前负责人'),
+    positionName: text(item, ['positionName', 'position_name'], '') || undefined,
     assignmentId: text(item, ['assignmentId', 'employeePositionAssignmentId', 'positionAssignmentId', 'assignment_id', 'position_assignment_id'], '') || undefined,
     orgUnitId: text(item, ['orgUnitId', 'targetOrgUnitId', 'org_unit_id', 'target_org_unit_id'], '') || undefined,
     employeeId: text(item, ['employeeId', 'employee_id'], '') || undefined,
@@ -178,6 +183,7 @@ function normalizeExpectation(item: JsonObject): WorkExpectation {
     workPackageVersionId: text(item, ['workPackageVersionId', 'work_package_version_id'], '') || undefined,
     workPackageItemId: text(item, ['workPackageItemId', 'work_package_item_id'], '') || undefined,
     recordId: text(item, ['recordId', 'workRecordId', 'record_id'], '') || records[0]?.id,
+    latestSubmittedAt: text(item, ['latestSubmittedAt', 'latest_submitted_at'], '') || records[0]?.submittedAt,
     rowVersion: value(item, 'rowVersion', 'row_version') === undefined ? undefined : number(item, ['rowVersion', 'row_version']),
     evaluationOutcome: text(item, ['evaluationOutcome', 'evaluation_outcome'], '') || undefined,
     standards,
@@ -289,7 +295,7 @@ function normalizeAttachment(item: JsonObject): WorkRecordAttachment {
 }
 
 function normalizeWorkRecord(item: JsonObject): WorkRecordDetail {
-  const rawPayload = value(item, 'payload')
+  const rawPayload = jsonColumn(value(item, 'payload'))
   return {
     id: text(item, ['id']),
     status: text(item, ['status'], 'SUBMITTED'),
@@ -444,7 +450,7 @@ export async function loadAttachmentContent(identity: ApiIdentity, attachmentId:
 export async function createCorrectiveTask(identity: ApiIdentity, input: {
   orgUnitId: string
   assigneeAssignmentId: string
-  reviewerAssignmentId: string
+  reviewerAssignmentId?: string
   creatorAssignmentId?: string
   standardVersionId?: string
   workRecordId: string

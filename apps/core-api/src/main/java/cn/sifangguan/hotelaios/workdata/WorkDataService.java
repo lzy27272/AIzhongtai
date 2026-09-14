@@ -176,7 +176,7 @@ public class WorkDataService {
     @Transactional(readOnly = true)
     public Map<String, Object> record(UUID recordId) {
         TenantPrincipal principal = prepare();
-        accessPolicy.requirePermission("work-record.read");
+        accessPolicy.requireAnyPermission("work-record.read", "work-record.review", "work-record.team-read");
         MapSqlParameterSource params = base(principal).addValue("recordId", recordId);
         Map<String, Object> result = new LinkedHashMap<>(jdbc.queryForMap("""
                 select w.*, owner_org.name as org_unit_name, target_org.name as target_org_unit_name,

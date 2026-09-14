@@ -351,18 +351,20 @@ public class EvaluationService {
         } else if ("WORK_RECORD".equals(type)) {
             Integer count = jdbc.queryForObject("""
                     select count(*) from work_record w
-                    where w.tenant_id = :tenantId and w.id = :subjectId and w.org_unit_id = :orgUnitId
+                    where w.tenant_id = :tenantId and w.id = :subjectId
+                      and w.target_org_unit_id = :orgUnitId
                       and w.status in ('SUBMITTED', 'APPROVED')
                       and (cast(:assignmentId as uuid) is null or w.position_assignment_id = :assignmentId)
                       and exists (
                         select 1 from work_package_item_standard s
                         where s.tenant_id = w.tenant_id and s.work_package_item_id = w.work_package_item_id
-                          and s.usage_type = 'ACCEPTANCE' and s.standard_version_id = :standardVersionId
+                          and s.usage_type in ('ACCEPTANCE', 'EXECUTION')
+                          and s.standard_version_id = :standardVersionId
                       )
                     """, base(principal).addValue("subjectId", subjectId).addValue("orgUnitId", orgUnitId)
                     .addValue("assignmentId", assignmentId).addValue("standardVersionId", standardVersionId), Integer.class);
             if (count == null || count == 0) {
-                throw new IllegalArgumentException("工作记录不存在、任职不一致、尚未提交，或评价标准不是工作项验收标准");
+                throw new IllegalArgumentException("工作记录不存在、组织/任职不一致、尚未提交，或评价标准未绑定到该工作项");
             }
         } else {
             throw new IllegalArgumentException("评价对象类型必须为WORK_RECORD或TASK");
