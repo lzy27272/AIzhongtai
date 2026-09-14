@@ -12,6 +12,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -378,7 +379,8 @@ public class OrganizationService {
         return jdbc.queryForList("""
                 select distinct e.id, e.account_id, u.login_name, u.status as account_status,
                        e.employee_no, e.name, e.mobile, e.employment_status, e.hired_on,
-                       a.id as assignment_id, a.is_primary, a.valid_from, a.valid_to,
+                       a.id as assignment_id, a.manager_assignment_id, a.is_primary,
+                       a.assignment_type, a.valid_from, a.valid_to,
                        o.id as org_unit_id, o.name as org_unit_name,
                        p.id as position_id, p.name as position_name,
                        published.authorization_scope_type,
@@ -772,12 +774,8 @@ public class OrganizationService {
     public Map<String, Object> assignPosition(UUID employeeId, OrganizationModels.CreatePositionAssignment request) {
         accessPolicy.requirePermission("org.manage");
         TenantPrincipal principal = prepare();
-        if (request.validTo() != null && request.validTo().isBefore(request.validFrom())) {
-            throw new IllegalArgumentException("任职结束日期不能早于开始日期");
-        }
-        if (request.validTo() != null && request.validTo().isBefore(java.time.LocalDate.now())) {
-            throw new IllegalArgumentException("不能创建已经结束的有效任职");
-        }
+        validateAssignmentDates(request.validFrom(), request.validTo());
+        String assignmentType = assignmentType(request.assignmentType());
         requireOrgType(principal, request.orgUnitId());
         PositionRoleGrant positionGrant = lockActivePublishedPosition(principal, request.positionId());
         requirePositionApplicableToOrganization(principal, request.positionId(), request.orgUnitId());
@@ -786,36 +784,160 @@ public class OrganizationService {
                 principal, request.positionId(), positionGrant.scopeType(), request.responsibleHotelIds(),
                 request.orgUnitId());
         UUID accountId = lockActiveEmployeeAccount(principal, employeeId);
+        validateManagerAssignment(principal, employeeId, request.managerAssignmentId(), null);
+        return createAssignment(principal, employeeId, accountId, request.orgUnitId(), request.positionId(),
+                request.managerAssignmentId(), Boolean.TRUE.equals(request.primary()), assignmentType,
+                request.validFrom(), request.validTo(), positionGrant, responsibleHotelIds);
+    }
 
-        int previousPrimaryCount = 0;
-        if (Boolean.TRUE.equals(request.primary())) {
-            previousPrimaryCount = jdbc.update("""
+    @Transactional
+    public Map<String, Object> updateAssignment(
+            UUID assignmentId,
+            OrganizationModels.UpdatePositionAssignment request
+    ) {
+        accessPolicy.requirePermission("org.manage");
+        TenantPrincipal principal = prepare();
+        AssignmentRecord current = lockActiveAssignment(principal, assignmentId);
+        accessPolicy.requireOrgScope(current.orgUnitId());
+        validateAssignmentDates(request.validFrom(), request.validTo());
+        String assignmentType = assignmentType(request.assignmentType());
+        requireOrgType(principal, request.orgUnitId());
+        PositionRoleGrant positionGrant = lockActivePublishedPosition(principal, request.positionId());
+        requirePositionApplicableToOrganization(principal, request.positionId(), request.orgUnitId());
+        accessPolicy.requireOrgScope(request.orgUnitId());
+        validateManagerAssignment(principal, current.employeeId(), request.managerAssignmentId(), assignmentId);
+        Set<UUID> responsibleHotelIds = validateResponsibleHotels(
+                principal, request.positionId(), positionGrant.scopeType(), request.responsibleHotelIds(),
+                request.orgUnitId());
+
+        boolean identityChanged = !current.orgUnitId().equals(request.orgUnitId())
+                || !current.positionId().equals(request.positionId());
+        if (identityChanged) {
+            deactivateAssignmentRows(principal, current);
+            Map<String, Object> replacement = createAssignment(
+                    principal, current.employeeId(), current.accountId(), request.orgUnitId(), request.positionId(),
+                    request.managerAssignmentId(), Boolean.TRUE.equals(request.primary()), assignmentType,
+                    LocalDate.now(), request.validTo(), positionGrant, responsibleHotelIds);
+            UUID replacementId = (UUID) replacement.get("id");
+            int reassignedReports = jdbc.update("""
                     update employee_position_assignment
-                    set is_primary = false, updated_at = now()
-                    where tenant_id = :tenantId and employee_id = :employeeId
-                      and is_primary = true and status = 'ACTIVE'
-                    """, base(principal).addValue("employeeId", employeeId));
+                    set manager_assignment_id = :replacementId, updated_at = now()
+                    where tenant_id = :tenantId and manager_assignment_id = :assignmentId
+                      and status = 'ACTIVE'
+                    """, base(principal).addValue("assignmentId", assignmentId)
+                    .addValue("replacementId", replacementId));
+            replacePreferredWeComAssignment(principal, current.accountId(), assignmentId, replacementId);
+            auditWriter.record("POSITION_ASSIGNMENT_REPLACED", "POSITION_ASSIGNMENT", assignmentId,
+                    "{\"replacementAssignmentId\":\"" + replacementId
+                            + "\",\"reassignedReportCount\":" + reassignedReports + "}");
+            Map<String, Object> response = new LinkedHashMap<>(replacement);
+            response.put("replacedAssignmentId", assignmentId);
+            response.put("replacementAssignmentId", replacementId);
+            response.put("changeMode", "REPLACED");
+            return response;
         }
+
+        if (Boolean.TRUE.equals(request.primary())) {
+            demoteOtherPrimaryAssignments(principal, current.employeeId(), assignmentId);
+        }
+        boolean primary = Boolean.TRUE.equals(request.primary());
+        MapSqlParameterSource parameters = base(principal)
+                .addValue("assignmentId", assignmentId)
+                .addValue("managerAssignmentId", request.managerAssignmentId())
+                .addValue("primary", primary)
+                .addValue("assignmentType", assignmentType)
+                .addValue("validFrom", request.validFrom())
+                .addValue("validTo", request.validTo());
+        jdbc.update("""
+                update employee_position_assignment
+                set manager_assignment_id = :managerAssignmentId, is_primary = :primary,
+                    assignment_type = :assignmentType, valid_from = :validFrom,
+                    valid_to = :validTo, updated_at = now()
+                where tenant_id = :tenantId and id = :assignmentId and status = 'ACTIVE'
+                """, parameters);
+        jdbc.update("""
+                update role_assignment
+                set valid_from = greatest(valid_from, cast(:validFrom as date)::timestamptz),
+                    valid_to = case when cast(:validTo as date) is null then null
+                                    else (cast(:validTo as date) + interval '1 day')::timestamptz end
+                where tenant_id = :tenantId and source_type = 'POSITION_ASSIGNMENT'
+                  and source_assignment_id = :assignmentId
+                """, parameters);
+        replaceAssignmentHotelScope(principal, assignmentId, responsibleHotelIds);
+        UUID effectivePrimaryId = ensurePrimaryAssignment(principal, current.employeeId(),
+                primary ? null : assignmentId);
+        auditWriter.record("POSITION_ASSIGNMENT_UPDATED", "POSITION_ASSIGNMENT", assignmentId,
+                "{\"primaryAssignmentId\":" + nullableJsonUuid(effectivePrimaryId)
+                        + ",\"assignmentType\":\"" + assignmentType + "\"}");
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("id", assignmentId);
+        response.put("employeeId", current.employeeId());
+        response.put("orgUnitId", request.orgUnitId());
+        response.put("positionId", request.positionId());
+        response.put("primaryAssignmentId", effectivePrimaryId);
+        response.put("responsibleHotelIds", List.copyOf(responsibleHotelIds));
+        response.put("changeMode", "UPDATED");
+        return response;
+    }
+
+    @Transactional
+    public void endAssignment(UUID assignmentId) {
+        accessPolicy.requirePermission("org.manage");
+        TenantPrincipal principal = prepare();
+        AssignmentRecord current = lockActiveAssignment(principal, assignmentId);
+        accessPolicy.requireOrgScope(current.orgUnitId());
+        deactivateAssignmentRows(principal, current);
+        jdbc.update("""
+                update employee_position_assignment
+                set manager_assignment_id = null, updated_at = now()
+                where tenant_id = :tenantId and manager_assignment_id = :assignmentId
+                  and status = 'ACTIVE'
+                """, base(principal).addValue("assignmentId", assignmentId));
+        UUID primaryAssignmentId = ensurePrimaryAssignment(principal, current.employeeId(), assignmentId);
+        reconcileWeComBindingAfterAssignmentEnd(principal, current.accountId(), assignmentId,
+                primaryAssignmentId);
+        auditWriter.record("POSITION_ASSIGNMENT_ENDED", "POSITION_ASSIGNMENT", assignmentId,
+                "{\"primaryAssignmentId\":" + nullableJsonUuid(primaryAssignmentId) + "}");
+    }
+
+    private Map<String, Object> createAssignment(
+            TenantPrincipal principal,
+            UUID employeeId,
+            UUID accountId,
+            UUID orgUnitId,
+            UUID positionId,
+            UUID managerAssignmentId,
+            boolean primaryRequested,
+            String assignmentType,
+            LocalDate validFrom,
+            LocalDate validTo,
+            PositionRoleGrant positionGrant,
+            Set<UUID> responsibleHotelIds
+    ) {
+        boolean primary = primaryRequested || !hasActiveAssignment(principal, employeeId);
+        int previousPrimaryCount = primary
+                ? demoteOtherPrimaryAssignments(principal, employeeId, null)
+                : 0;
 
         UUID id = UUID.randomUUID();
         UUID roleAssignmentId = UUID.randomUUID();
         MapSqlParameterSource parameters = base(principal)
                 .addValue("id", id)
                 .addValue("employeeId", employeeId)
-                .addValue("orgUnitId", request.orgUnitId())
-                .addValue("positionId", request.positionId())
+                .addValue("orgUnitId", orgUnitId)
+                .addValue("positionId", positionId)
                 .addValue("accountId", accountId)
                 .addValue("roleAssignmentId", roleAssignmentId)
                 .addValue("roleId", positionGrant.roleId())
                 .addValue("scopeType", positionGrant.scopeType())
                 .addValue("scopeOrgUnitId", Set.of("ORG_UNIT", "ORG_TREE").contains(positionGrant.scopeType())
-                        ? request.orgUnitId() : null)
+                        ? orgUnitId : null)
                 .addValue("actorId", principal.actorId())
-                .addValue("managerAssignmentId", request.managerAssignmentId())
-                .addValue("primary", Boolean.TRUE.equals(request.primary()))
-                .addValue("assignmentType", request.assignmentType() == null ? "PERMANENT" : request.assignmentType().toUpperCase())
-                .addValue("validFrom", request.validFrom())
-                .addValue("validTo", request.validTo());
+                .addValue("managerAssignmentId", managerAssignmentId)
+                .addValue("primary", primary)
+                .addValue("assignmentType", assignmentType)
+                .addValue("validFrom", validFrom)
+                .addValue("validTo", validTo);
         jdbc.update("""
                 insert into employee_position_assignment
                     (id, tenant_id, employee_id, org_unit_id, position_id, manager_assignment_id,
@@ -836,13 +958,16 @@ public class OrganizationService {
                      :actorId, 'POSITION_ASSIGNMENT', :id)
                 """, parameters);
         replaceAssignmentHotelScope(principal, id, responsibleHotelIds);
+        if (!primary) {
+            ensurePrimaryAssignment(principal, employeeId, id);
+        }
         if (previousPrimaryCount > 0) {
             auditWriter.record("POSITION_PRIMARY_ASSIGNMENT_SWITCHED", "EMPLOYEE", employeeId,
                     "{\"previousPrimaryCount\":" + previousPrimaryCount
                             + ",\"newAssignmentId\":\"" + id + "\"}");
         }
-        return Map.of("id", id, "employeeId", employeeId, "orgUnitId", request.orgUnitId(),
-                "positionId", request.positionId(), "roleAssignmentId", roleAssignmentId,
+        return Map.of("id", id, "employeeId", employeeId, "orgUnitId", orgUnitId,
+                "positionId", positionId, "roleAssignmentId", roleAssignmentId,
                 "responsibleHotelIds", List.copyOf(responsibleHotelIds));
     }
 
@@ -889,6 +1014,235 @@ public class OrganizationService {
         return Map.of("assignmentId", assignmentId,
                 "responsibleHotelIds", List.copyOf(responsibleHotelIds));
     }
+
+    private AssignmentRecord lockActiveAssignment(TenantPrincipal principal, UUID assignmentId) {
+        List<AssignmentRecord> rows = jdbc.query("""
+                select assignment.id, assignment.employee_id, employee.account_id,
+                       assignment.org_unit_id, assignment.position_id,
+                       assignment.is_primary, assignment.valid_from
+                from employee_position_assignment assignment
+                join employee
+                  on employee.tenant_id = assignment.tenant_id
+                 and employee.id = assignment.employee_id
+                where assignment.tenant_id = :tenantId and assignment.id = :assignmentId
+                  and assignment.status = 'ACTIVE'
+                  and employee.employment_status = 'ACTIVE' and employee.deleted_at is null
+                  and employee.account_id is not null
+                for update of assignment, employee
+                """, base(principal).addValue("assignmentId", assignmentId),
+                (rs, rowNum) -> new AssignmentRecord(
+                        rs.getObject("id", UUID.class),
+                        rs.getObject("employee_id", UUID.class),
+                        rs.getObject("account_id", UUID.class),
+                        rs.getObject("org_unit_id", UUID.class),
+                        rs.getObject("position_id", UUID.class),
+                        rs.getBoolean("is_primary"),
+                        rs.getObject("valid_from", LocalDate.class)));
+        if (rows.size() != 1) {
+            throw new IllegalArgumentException("任职不存在、已结束或员工账号不可用");
+        }
+        return rows.getFirst();
+    }
+
+    private void validateAssignmentDates(LocalDate validFrom, LocalDate validTo) {
+        if (validTo != null && validTo.isBefore(validFrom)) {
+            throw new IllegalArgumentException("任职结束日期不能早于开始日期");
+        }
+        if (validTo != null && validTo.isBefore(LocalDate.now())) {
+            throw new IllegalArgumentException("不能保存已经结束的有效任职；如需立即移除，请使用“结束任职”");
+        }
+    }
+
+    private String assignmentType(String value) {
+        String normalized = value == null || value.isBlank() ? "PERMANENT" : value.trim().toUpperCase();
+        if (!Set.of("PERMANENT", "TEMPORARY", "ACTING").contains(normalized)) {
+            throw new IllegalArgumentException("任职类型必须为正式、临时或代理");
+        }
+        return normalized;
+    }
+
+    private void validateManagerAssignment(
+            TenantPrincipal principal,
+            UUID employeeId,
+            UUID managerAssignmentId,
+            UUID editingAssignmentId
+    ) {
+        if (managerAssignmentId == null) return;
+        Integer count = jdbc.queryForObject("""
+                select count(*)
+                from employee_position_assignment manager
+                where manager.tenant_id = :tenantId and manager.id = :managerAssignmentId
+                  and manager.employee_id <> :employeeId
+                  and manager.status = 'ACTIVE' and manager.valid_from <= current_date
+                  and (manager.valid_to is null or manager.valid_to >= current_date)
+                  and (cast(:editingAssignmentId as uuid) is null or manager.id <> :editingAssignmentId)
+                """, base(principal).addValue("managerAssignmentId", managerAssignmentId)
+                .addValue("employeeId", employeeId)
+                .addValue("editingAssignmentId", editingAssignmentId), Integer.class);
+        if (count == null || count != 1) {
+            throw new IllegalArgumentException("上级任职已失效，或不能选择该员工自己的任职");
+        }
+    }
+
+    private void deactivateAssignmentRows(TenantPrincipal principal, AssignmentRecord assignment) {
+        MapSqlParameterSource parameters = base(principal)
+                .addValue("assignmentId", assignment.id());
+        jdbc.update("""
+                update employee_position_assignment
+                set status = 'INACTIVE', valid_to = case
+                    when valid_to is null or valid_to > greatest(valid_from, current_date)
+                    then greatest(valid_from, current_date) else valid_to end,
+                    updated_at = now()
+                where tenant_id = :tenantId and id = :assignmentId and status = 'ACTIVE'
+                """, parameters);
+        jdbc.update("""
+                update role_assignment
+                set valid_to = greatest(valid_from, now())
+                where tenant_id = :tenantId and source_type = 'POSITION_ASSIGNMENT'
+                  and source_assignment_id = :assignmentId
+                  and (valid_to is null or valid_to > now())
+                """, parameters);
+    }
+
+    private boolean hasActiveAssignment(TenantPrincipal principal, UUID employeeId) {
+        Boolean exists = jdbc.queryForObject("""
+                select exists (
+                    select 1 from employee_position_assignment
+                    where tenant_id = :tenantId and employee_id = :employeeId and status = 'ACTIVE'
+                )
+                """, base(principal).addValue("employeeId", employeeId), Boolean.class);
+        return Boolean.TRUE.equals(exists);
+    }
+
+    private int demoteOtherPrimaryAssignments(
+            TenantPrincipal principal,
+            UUID employeeId,
+            UUID excludedAssignmentId
+    ) {
+        MapSqlParameterSource parameters = base(principal).addValue("employeeId", employeeId);
+        String exclusion = "";
+        if (excludedAssignmentId != null) {
+            parameters.addValue("excludedAssignmentId", excludedAssignmentId);
+            exclusion = " and id <> :excludedAssignmentId";
+        }
+        return jdbc.update("""
+                update employee_position_assignment
+                set is_primary = false, updated_at = now()
+                where tenant_id = :tenantId and employee_id = :employeeId
+                  and is_primary = true and status = 'ACTIVE'
+                """ + exclusion, parameters);
+    }
+
+    private UUID ensurePrimaryAssignment(
+            TenantPrincipal principal,
+            UUID employeeId,
+            UUID deprioritizedAssignmentId
+    ) {
+        List<UUID> current = jdbc.query("""
+                select id from employee_position_assignment
+                where tenant_id = :tenantId and employee_id = :employeeId
+                  and status = 'ACTIVE' and is_primary = true
+                  and valid_from <= current_date and (valid_to is null or valid_to >= current_date)
+                order by valid_from, id limit 1
+                """, base(principal).addValue("employeeId", employeeId),
+                (rs, rowNum) -> rs.getObject("id", UUID.class));
+        if (!current.isEmpty()) return current.getFirst();
+
+        MapSqlParameterSource parameters = base(principal).addValue("employeeId", employeeId);
+        String ordering = "valid_from, id";
+        if (deprioritizedAssignmentId != null) {
+            parameters.addValue("deprioritizedAssignmentId", deprioritizedAssignmentId);
+            ordering = "case when id = :deprioritizedAssignmentId then 1 else 0 end, valid_from, id";
+        }
+        List<UUID> candidates = jdbc.query("""
+                select id from employee_position_assignment
+                where tenant_id = :tenantId and employee_id = :employeeId
+                  and status = 'ACTIVE' and valid_from <= current_date
+                  and (valid_to is null or valid_to >= current_date)
+                order by """ + " " + ordering + " limit 1", parameters,
+                (rs, rowNum) -> rs.getObject("id", UUID.class));
+        if (candidates.isEmpty()) return null;
+        UUID selected = candidates.getFirst();
+        jdbc.update("""
+                update employee_position_assignment
+                set is_primary = true, updated_at = now()
+                where tenant_id = :tenantId and id = :assignmentId
+                """, base(principal).addValue("assignmentId", selected));
+        return selected;
+    }
+
+    private void replacePreferredWeComAssignment(
+            TenantPrincipal principal,
+            UUID accountId,
+            UUID previousAssignmentId,
+            UUID replacementAssignmentId
+    ) {
+        jdbc.update("""
+                update wecom_user_binding
+                set preferred_assignment_id = case
+                        when preferred_assignment_id = :previousAssignmentId then :replacementAssignmentId
+                        else preferred_assignment_id end,
+                    assignment_snapshot_hash = null,
+                    assignment_selection_required = case
+                        when preferred_assignment_id = :previousAssignmentId then false
+                        else assignment_selection_required end,
+                    row_version = row_version + 1, updated_by = :actorId, updated_at = now()
+                where tenant_id = :tenantId and account_id = :accountId and status <> 'REVOKED'
+                """, base(principal).addValue("accountId", accountId)
+                .addValue("previousAssignmentId", previousAssignmentId)
+                .addValue("replacementAssignmentId", replacementAssignmentId)
+                .addValue("actorId", principal.actorId()));
+    }
+
+    private void reconcileWeComBindingAfterAssignmentEnd(
+            TenantPrincipal principal,
+            UUID accountId,
+            UUID endedAssignmentId,
+            UUID primaryAssignmentId
+    ) {
+        MapSqlParameterSource parameters = base(principal)
+                .addValue("accountId", accountId)
+                .addValue("endedAssignmentId", endedAssignmentId)
+                .addValue("primaryAssignmentId", primaryAssignmentId)
+                .addValue("actorId", principal.actorId());
+        if (primaryAssignmentId == null) {
+            jdbc.update("""
+                    update wecom_user_binding
+                    set status = 'SUSPENDED', status_reason = 'ACCOUNT_OR_ASSIGNMENT_INACTIVE',
+                        preferred_assignment_id = null, assignment_snapshot_hash = null,
+                        assignment_selection_required = false,
+                        row_version = row_version + 1, updated_by = :actorId, updated_at = now()
+                    where tenant_id = :tenantId and account_id = :accountId and status <> 'REVOKED'
+                    """, parameters);
+            return;
+        }
+        jdbc.update("""
+                update wecom_user_binding
+                set preferred_assignment_id = case
+                        when preferred_assignment_id = :endedAssignmentId then :primaryAssignmentId
+                        else preferred_assignment_id end,
+                    assignment_snapshot_hash = null,
+                    assignment_selection_required = case
+                        when preferred_assignment_id = :endedAssignmentId then false
+                        else assignment_selection_required end,
+                    row_version = row_version + 1, updated_by = :actorId, updated_at = now()
+                where tenant_id = :tenantId and account_id = :accountId and status <> 'REVOKED'
+                """, parameters);
+    }
+
+    private String nullableJsonUuid(UUID value) {
+        return value == null ? "null" : "\"" + value + "\"";
+    }
+
+    private record AssignmentRecord(
+            UUID id,
+            UUID employeeId,
+            UUID accountId,
+            UUID orgUnitId,
+            UUID positionId,
+            boolean primary,
+            LocalDate validFrom
+    ) { }
 
     private TenantPrincipal prepare() {
         TenantPrincipal principal = accessPolicy.principal();

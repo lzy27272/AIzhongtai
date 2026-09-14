@@ -599,11 +599,19 @@ dd { margin: 5px 0 0; color: #334f64; font-size: 10px; }
 .employee-assignment-empty { padding: 14px; border: 1px dashed #d6e3e9; border-radius: 9px; color: #80929d; text-align: center; font-size: 10px; background: #fff; }
 .employee-assignment-list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; }
 .employee-assignment-list article { min-width: 0; padding: 11px 12px; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 4px 10px; align-items: center; border: 1px solid #dce7ec; border-radius: 9px; background: #fff; }
+.employee-assignment-list article.editing { border-color: #6faee1; box-shadow: 0 0 0 3px rgba(38,121,238,.08); }
 .employee-assignment-list article span { min-width: 0; display: grid; gap: 3px; }
 .employee-assignment-list article strong { overflow: hidden; color: #244a61; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .employee-assignment-list article small { color: #7b909d; font-size: 9px; }
-.employee-assignment-list article > b { padding: 4px 7px; border-radius: 999px; color: #167a60; background: #e7f7f0; font-size: 8px; }
 .employee-assignment-list article > small { grid-column: 1/-1; }
+.assignment-card-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }
+.assignment-card-actions > b { padding: 4px 7px; border-radius: 999px; color: #167a60; background: #e7f7f0; font-size: 8px; }
+.employee-assignment-editor { padding: 14px; display: grid; gap: 12px; border: 1px solid #bdd8e8; border-radius: 10px; background: #fff; }
+.employee-assignment-editor > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.employee-assignment-editor > header > div { display: grid; gap: 4px; }
+.employee-assignment-editor > header strong { color: #244a61; font-size: 11px; }
+.employee-assignment-editor > header small { color: #758b98; font-size: 9px; line-height: 1.5; }
+.assignment-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .employee-new-assignment > p { margin: -3px 0 0; color: #738995; font-size: 9px; line-height: 1.6; }
 .version-summary { display: grid; gap: 10px; }
 .version-summary > strong { color: #246fa8; }

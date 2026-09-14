@@ -120,4 +120,16 @@ public final class OrganizationModels {
             List<@NotNull UUID> responsibleHotelIds
     ) {
     }
+
+    public record UpdatePositionAssignment(
+            @NotNull UUID orgUnitId,
+            @NotNull UUID positionId,
+            UUID managerAssignmentId,
+            Boolean primary,
+            String assignmentType,
+            @NotNull LocalDate validFrom,
+            LocalDate validTo,
+            List<@NotNull UUID> responsibleHotelIds
+    ) {
+    }
 }

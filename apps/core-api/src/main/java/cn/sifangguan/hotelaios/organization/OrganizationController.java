@@ -109,4 +109,18 @@ public class OrganizationController {
     ) {
         return service.updateAssignmentHotelScope(assignmentId, request);
     }
+
+    @PutMapping("/assignments/{assignmentId}")
+    public Map<String, Object> updateAssignment(
+            @PathVariable UUID assignmentId,
+            @Valid @RequestBody OrganizationModels.UpdatePositionAssignment request
+    ) {
+        return service.updateAssignment(assignmentId, request);
+    }
+
+    @DeleteMapping("/assignments/{assignmentId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void endAssignment(@PathVariable UUID assignmentId) {
+        service.endAssignment(assignmentId);
+    }
 }

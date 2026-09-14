@@ -17,6 +17,7 @@ import org.springframework.test.web.servlet.MvcResult;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
+import java.time.LocalDate;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,6 +34,7 @@ class OrganizationMaintenanceIntegrationTest {
     private static final String CEO = "19000000-0000-0000-0000-000000000001";
     private static final String FRONT_DESK = "19000000-0000-0000-0000-000000000003";
     private static final String HOTEL = "12000000-0000-0000-0000-000000000003";
+    private static final String FRONT_OFFICE = "12000000-0000-0000-0000-000000000005";
     private static final String FRONT_OFFICE_SUPERVISOR_POSITION = "14000000-0000-0000-0000-000000000003";
 
     private static final EmbeddedPostgres POSTGRES = startPostgres();
@@ -205,6 +207,86 @@ class OrganizationMaintenanceIntegrationTest {
     }
 
     @Test
+    void currentAssignmentCanBeUpdatedReplacedAndEndedWithoutDeletingHistory() throws Exception {
+        String suffix = UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        UUID firstPositionId = UUID.fromString(json(postJson("/api/v1/org/positions", CEO, """
+                {"name":"任职变更原岗位%s","appliesToAllHotels":true,"applicableHotelIds":[],
+                 "permissionCodes":["org.read"],"authorizationScopeType":"SELF","wecomSelfSelectable":false}
+                """.formatted(suffix))).path("id").asText());
+        UUID secondPositionId = UUID.fromString(json(postJson("/api/v1/org/positions", CEO, """
+                {"name":"任职变更新岗位%s","appliesToAllHotels":true,"applicableHotelIds":[],
+                 "permissionCodes":["org.read"],"authorizationScopeType":"SELF","wecomSelfSelectable":false}
+                """.formatted(suffix))).path("id").asText());
+        postJson("/api/v1/org/positions/" + firstPositionId + "/profile/publish", CEO,
+                "{\"expectedProfileVersion\":0,\"expectedPositionVersion\":0}");
+        postJson("/api/v1/org/positions/" + secondPositionId + "/profile/publish", CEO,
+                "{\"expectedProfileVersion\":0,\"expectedPositionVersion\":0}");
+        JsonNode employee = json(postJson("/api/v1/org/employees", CEO, """
+                {"employeeNo":"ASSIGN-EDIT-%s","name":"任职编辑测试员工","hiredOn":"%s",
+                 "loginName":"assignment.edit.%s","temporaryPassword":"TempPass!2026"}
+                """.formatted(suffix, LocalDate.now(), suffix.toLowerCase())));
+        UUID employeeId = UUID.fromString(employee.path("id").asText());
+        UUID primaryAssignmentId = UUID.fromString(json(postJson(
+                "/api/v1/org/employees/" + employeeId + "/assignments", CEO, """
+                {"orgUnitId":"%s","positionId":"%s","primary":true,
+                 "assignmentType":"PERMANENT","validFrom":"%s"}
+                """.formatted(HOTEL, firstPositionId, LocalDate.now()))).path("id").asText());
+        UUID assignmentId = UUID.fromString(json(postJson(
+                "/api/v1/org/employees/" + employeeId + "/assignments", CEO, """
+                {"orgUnitId":"%s","positionId":"%s","primary":false,
+                 "assignmentType":"PERMANENT","validFrom":"%s"}
+                """.formatted(HOTEL, secondPositionId, LocalDate.now()))).path("id").asText());
+
+        JsonNode updated = json(putJson("/api/v1/org/assignments/" + assignmentId, CEO, """
+                {"orgUnitId":"%s","positionId":"%s","primary":true,
+                 "assignmentType":"TEMPORARY","validFrom":"%s","validTo":"%s",
+                 "responsibleHotelIds":[]}
+                """.formatted(HOTEL, secondPositionId, LocalDate.now(), LocalDate.now().plusDays(30)), 200));
+        assertThat(updated.path("changeMode").asText()).isEqualTo("UPDATED");
+        assertThat(jdbc.queryForObject(
+                "select assignment_type from employee_position_assignment where id = ?",
+                String.class, assignmentId)).isEqualTo("TEMPORARY");
+
+        JsonNode replaced = json(putJson("/api/v1/org/assignments/" + assignmentId, CEO, """
+                {"orgUnitId":"%s","positionId":"%s","primary":false,
+                 "assignmentType":"PERMANENT","validFrom":"%s","validTo":null,
+                 "responsibleHotelIds":[]}
+                """.formatted(FRONT_OFFICE, secondPositionId, LocalDate.now()), 200));
+        UUID replacementId = UUID.fromString(replaced.path("replacementAssignmentId").asText());
+        assertThat(replaced.path("changeMode").asText()).isEqualTo("REPLACED");
+        assertThat(jdbc.queryForObject(
+                "select status from employee_position_assignment where id = ?",
+                String.class, assignmentId)).isEqualTo("INACTIVE");
+        assertThat(jdbc.queryForObject(
+                "select status from employee_position_assignment where id = ?",
+                String.class, replacementId)).isEqualTo("ACTIVE");
+        assertThat(jdbc.queryForObject(
+                "select count(*) from employee_position_assignment where employee_id = ?",
+                Integer.class, employeeId)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("""
+                select count(*) from role_assignment
+                where source_assignment_id = ? and (valid_to is null or valid_to > now())
+                """, Integer.class, assignmentId)).isZero();
+
+        deleteJson("/api/v1/org/assignments/" + primaryAssignmentId, CEO, 204);
+        assertThat(jdbc.queryForObject(
+                "select is_primary from employee_position_assignment where id = ?",
+                Boolean.class, replacementId)).isTrue();
+        assertThat(jdbc.queryForObject(
+                "select status from employee_position_assignment where id = ?",
+                String.class, primaryAssignmentId)).isEqualTo("INACTIVE");
+
+        deleteJson("/api/v1/org/assignments/" + replacementId, CEO, 204);
+        assertThat(jdbc.queryForObject(
+                "select status from employee_position_assignment where id = ?",
+                String.class, replacementId)).isEqualTo("INACTIVE");
+        assertThat(jdbc.queryForObject("""
+                select count(*) from role_assignment
+                where source_assignment_id = ? and (valid_to is null or valid_to > now())
+                """, Integer.class, replacementId)).isZero();
+    }
+
+    @Test
     void staffWithoutOrganizationManagementPermissionCannotModifyMasterData() throws Exception {
         putJson("/api/v1/org/units/" + HOTEL, FRONT_DESK, """
                 {"code":"HZ-CENTER","name":"不应修改","sortOrder":1,"status":"ACTIVE","propertyCode":"HZ001"}
@@ -221,13 +303,14 @@ class OrganizationMaintenanceIntegrationTest {
                 .andReturn();
     }
 
-    private void putJson(String path, String actorId, String body, int expectedStatus) throws Exception {
-        mockMvc.perform(put(path)
+    private MvcResult putJson(String path, String actorId, String body, int expectedStatus) throws Exception {
+        return mockMvc.perform(put(path)
                         .header("X-Tenant-Id", TENANT)
                         .header("X-Actor-Id", actorId)
                         .contentType("application/json")
                         .content(body))
-                .andExpect(status().is(expectedStatus));
+                .andExpect(status().is(expectedStatus))
+                .andReturn();
     }
 
     private void deleteJson(String path, String actorId, int expectedStatus) throws Exception {
