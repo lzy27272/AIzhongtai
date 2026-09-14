@@ -48,6 +48,12 @@ export function buildTaskDeepLink(taskId: string): string {
   return `#/tasks?${query.toString()}`
 }
 
+export function buildWorkExpectationDeepLink(expectationId: string): string {
+  if (!TASK_ID_PATTERN.test(expectationId)) throw new Error('无效的岗位事项编号。')
+  const query = new URLSearchParams({ expectationId })
+  return `#/my-work?${query.toString()}`
+}
+
 export function buildAppHashLocation(hashRoute: string, baseUrl: string): string {
   const safeBase = baseUrl.startsWith('/') && !baseUrl.startsWith('//') && !/[\\\u0000-\u001f\u007f]/.test(baseUrl)
     ? baseUrl
@@ -84,6 +90,16 @@ export function safeTaskDeepLink(returnTo: string | undefined): string {
       throw new Error('企微工作台目标包含非预期参数，系统已拒绝跳转。')
     }
     return '#/workbench'
+  }
+
+  if (target.pathname === '/my-work') {
+    const expectationIds = target.searchParams.getAll('expectationId')
+    const queryKeys = [...target.searchParams.keys()]
+    if (target.hash || queryKeys.length !== 1 || queryKeys[0] !== 'expectationId'
+      || expectationIds.length !== 1 || !TASK_ID_PATTERN.test(expectationIds[0])) {
+      throw new Error('企微登录目标缺少有效的岗位事项编号，系统已拒绝跳转。')
+    }
+    return buildWorkExpectationDeepLink(expectationIds[0])
   }
 
   if (target.pathname !== '/tasks') {
