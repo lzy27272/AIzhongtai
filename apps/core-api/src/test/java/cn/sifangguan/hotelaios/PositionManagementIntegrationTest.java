@@ -175,11 +175,47 @@ class PositionManagementIntegrationTest {
                         "iam.manage", "position-profile.manage", "wecom-binding.approve",
                         "investment.confirm"
                 );
+        assertThat(option(options, "executive-task.assign").path("delegable").asBoolean()).isFalse();
+        assertThat(option(options, "executive-task.assign").path("restrictionReason").asText())
+                .isEqualTo("仅集团董事长岗位可配置");
+        assertThat(option(options, "dashboard.ceo").path("delegable").asBoolean()).isFalse();
+
+        UUID vicePresidentPositionId = jdbc.queryForObject("""
+                select id from position_definition
+                where tenant_id = ?::uuid and code = 'GROUP_VICE_PRESIDENT'
+                """, UUID.class, TENANT);
+        JsonNode vicePresidentOptions = json(getJson(
+                "/api/v1/org/positions/function-options?positionId=" + vicePresidentPositionId,
+                200
+        ).andReturn());
+        assertThat(option(vicePresidentOptions, "executive-task.read").path("delegable").asBoolean())
+                .isFalse();
+        assertThat(option(vicePresidentOptions, "dashboard.ceo").path("delegable").asBoolean())
+                .isFalse();
+
+        UUID chairmanPositionId = jdbc.queryForObject("""
+                select id from position_definition
+                where tenant_id = ?::uuid and code = 'GROUP_CHAIRMAN'
+                """, UUID.class, TENANT);
+        JsonNode chairmanOptions = json(getJson(
+                "/api/v1/org/positions/function-options?positionId=" + chairmanPositionId,
+                200
+        ).andReturn());
+        assertThat(option(chairmanOptions, "executive-task.read").path("delegable").asBoolean())
+                .isTrue();
+        assertThat(option(chairmanOptions, "executive-task.assign").path("delegable").asBoolean())
+                .isTrue();
 
         postJson("/api/v1/org/positions", """
                 {"name":"越权岗位","appliesToAllHotels":true,"applicableHotelIds":[],
                  "permissionCodes":["iam.manage"],"authorizationScopeType":"SELF",
                  "wecomSelfSelectable":true}
+                """, 400);
+
+        postJson("/api/v1/org/positions", """
+                {"name":"越权集团任务岗位","appliesToAllHotels":true,"applicableHotelIds":[],
+                 "permissionCodes":["executive-task.assign"],"authorizationScopeType":"SELF",
+                 "wecomSelfSelectable":false}
                 """, 400);
 
         JsonNode created = json(postJson("/api/v1/org/positions", """
@@ -188,6 +224,16 @@ class PositionManagementIntegrationTest {
                  "wecomSelfSelectable":false}
                 """, 201));
         String id = created.path("id").asText();
+        putJson("/api/v1/org/positions/" + id + "/profile/draft", """
+                {"expectedProfileVersion":0,"permissionCodes":["executive-task.read"],
+                 "authorizationScopeType":"ORG_UNIT","wecomSelfSelectable":false}
+                """, 400);
+        JsonNode restrictedImpact = json(postJson(
+                "/api/v1/org/positions/" + id + "/impact-preview", """
+                {"operation":"PUBLISH_PROFILE","permissionCodes":["executive-task.read"]}
+                """, 200));
+        assertThat(restrictedImpact.path("blockedPermissionCodes").toString())
+                .contains("executive-task.read");
         postJson("/api/v1/org/positions/" + id + "/profile/publish", """
                 {"expectedProfileVersion":0,"expectedPositionVersion":0}
                 """, 200);
@@ -556,6 +602,13 @@ class PositionManagementIntegrationTest {
             if (assignmentId.equals(assignment.path("id").asText())) return assignment;
         }
         throw new AssertionError("响应缺少任职 " + assignmentId);
+    }
+
+    private JsonNode option(JsonNode response, String permissionCode) {
+        for (JsonNode option : response) {
+            if (permissionCode.equals(option.path("permissionCode").asText())) return option;
+        }
+        throw new AssertionError("响应缺少权限选项 " + permissionCode);
     }
 
     private Set<String> permissionCodes(JsonNode assignment) {

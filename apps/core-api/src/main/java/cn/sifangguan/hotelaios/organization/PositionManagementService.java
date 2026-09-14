@@ -105,9 +105,11 @@ public class PositionManagementService {
     }
 
     @Transactional(readOnly = true)
-    public List<PositionManagementModels.PermissionOption> functionOptions() {
+    public List<PositionManagementModels.PermissionOption> functionOptions(UUID positionId) {
         accessPolicy.requirePermission("position-profile.read");
-        prepare();
+        TenantPrincipal principal = prepare();
+        PositionLock position = positionId == null
+                ? null : requirePosition(principal, positionId, false, false);
         return jdbc.query("""
                 select code, coalesce(nullif(description, ''), code) as label,
                        function_category, delegable_to_position
@@ -116,7 +118,10 @@ public class PositionManagementService {
                 order by function_category, code
                 """, Map.of(), (rs, rowNum) -> new PositionManagementModels.PermissionOption(
                 rs.getString("code"), rs.getString("label"),
-                rs.getString("function_category"), rs.getBoolean("delegable_to_position")
+                rs.getString("function_category"),
+                rs.getBoolean("delegable_to_position")
+                        && permissionAllowedForPosition(position, rs.getString("code")),
+                permissionRestrictionReason(position, rs.getString("code"))
         ));
     }
 
@@ -146,6 +151,7 @@ public class PositionManagementService {
         UUID profileId = UUID.randomUUID();
         UUID draftId = UUID.randomUUID();
         String internalCode = "CUSTOM_" + positionId.toString().replace("-", "").toUpperCase(Locale.ROOT);
+        requirePositionPermissionBoundaries(internalCode, internalCode, selected);
         MapSqlParameterSource params = base(principal)
                 .addValue("positionId", positionId)
                 .addValue("roleId", roleId)
@@ -297,7 +303,10 @@ public class PositionManagementService {
         Set<String> proposed = request.permissionCodes() == null
                 ? draftPermissions(principal, positionId, null)
                 : normalizeCodes(request.permissionCodes());
-        Set<String> blocked = blockedPermissions(proposed);
+        Set<String> blocked = new LinkedHashSet<>(blockedPermissions(proposed));
+        blocked.addAll(restrictedPermissionCodes(
+                position.positionCode(), position.roleCode(), proposed
+        ));
         Set<String> allowedProposed = new LinkedHashSet<>(proposed);
         allowedProposed.removeAll(blocked);
         return new PositionManagementModels.ImpactPreview(
@@ -591,9 +600,10 @@ public class PositionManagementService {
     ) {
         accessPolicy.requirePermission("position-profile.manage");
         TenantPrincipal principal = prepareForManagement();
-        lockPosition(principal, positionId, false);
+        PositionLock position = lockPosition(principal, positionId, false);
         String authorizationScope = normalizeScope(request.authorizationScopeType());
         Set<String> permissions = requireDelegablePermissions(request.permissionCodes());
+        requirePositionPermissionBoundaries(position.positionCode(), position.roleCode(), permissions);
         ProfileLock profile = hotelId == null
                 ? lockGroupProfile(principal, positionId)
                 : requireOrCreateHotelProfile(principal, positionId, hotelId);
@@ -655,6 +665,7 @@ public class PositionManagementService {
         VersionLock draft = lockDraft(principal, profile.id());
         requireExpected(draft.rowVersion(), request.expectedProfileVersion());
         Set<String> selected = permissionsForVersion(principal, draft.id());
+        requirePositionPermissionBoundaries(position.positionCode(), position.roleCode(), selected);
 
         if (hotelId != null) {
             VersionLock baseline = publishedVersion(principal, positionId, null);
@@ -1153,6 +1164,72 @@ public class PositionManagementService {
         return blocked;
     }
 
+    private static boolean permissionAllowedForPosition(PositionLock position, String permissionCode) {
+        if (position == null) {
+            return !isPositionRestrictedPermission(permissionCode);
+        }
+        return restrictedPermissionCodes(
+                position.positionCode(), position.roleCode(), Set.of(permissionCode)
+        ).isEmpty();
+    }
+
+    private static boolean isPositionRestrictedPermission(String permissionCode) {
+        return "executive-task.read".equals(permissionCode)
+                || "executive-task.assign".equals(permissionCode)
+                || "dashboard.ceo".equals(permissionCode);
+    }
+
+    private static String permissionRestrictionReason(PositionLock position, String permissionCode) {
+        if (("executive-task.read".equals(permissionCode)
+                || "executive-task.assign".equals(permissionCode))
+                && (position == null || !"GROUP_CHAIRMAN".equals(position.positionCode())
+                || !"GROUP_CHAIRMAN".equals(position.roleCode()))) {
+            return "仅集团董事长岗位可配置";
+        }
+        if ("dashboard.ceo".equals(permissionCode)
+                && (position == null || !Set.of("CEO", "GROUP_CHAIRMAN").contains(position.roleCode()))) {
+            return "仅集团总经理或董事长岗位可配置";
+        }
+        return null;
+    }
+
+    private static Set<String> restrictedPermissionCodes(
+            String positionCode,
+            String roleCode,
+            Collection<String> requested
+    ) {
+        Set<String> restricted = new LinkedHashSet<>();
+        for (String permissionCode : requested) {
+            if (("executive-task.read".equals(permissionCode)
+                    || "executive-task.assign".equals(permissionCode))
+                    && !("GROUP_CHAIRMAN".equals(positionCode)
+                    && "GROUP_CHAIRMAN".equals(roleCode))) {
+                restricted.add(permissionCode);
+            }
+            if ("dashboard.ceo".equals(permissionCode)
+                    && !Set.of("CEO", "GROUP_CHAIRMAN").contains(roleCode)) {
+                restricted.add(permissionCode);
+            }
+        }
+        return restricted;
+    }
+
+    private static void requirePositionPermissionBoundaries(
+            String positionCode,
+            String roleCode,
+            Collection<String> requested
+    ) {
+        Set<String> restricted = restrictedPermissionCodes(positionCode, roleCode, requested);
+        if (restricted.isEmpty()) return;
+        if (restricted.contains("executive-task.read")
+                || restricted.contains("executive-task.assign")) {
+            throw new IllegalArgumentException(
+                    "集团任务的查看和派发权限仅允许配置给集团董事长岗位"
+            );
+        }
+        throw new IllegalArgumentException("集团总览权限仅允许配置给集团总经理或董事长岗位");
+    }
+
     private void replacePermissions(TenantPrincipal principal, UUID versionId, Collection<String> codes) {
         jdbc.update("""
                 delete from position_function_profile_permission
@@ -1508,7 +1585,8 @@ public class PositionManagementService {
         try {
             return jdbc.queryForObject("""
                     select position.id, position.row_version, position.deletion_batch_id,
-                           position.applies_to_all_hotels, role.code as role_code,
+                           position.applies_to_all_hotels, position.code as position_code,
+                           role.code as role_code,
                            role.role_type
                     from position_definition position
                     join position_function_profile profile
@@ -1524,7 +1602,8 @@ public class PositionManagementService {
                             rs.getObject("id", UUID.class), rs.getLong("row_version"),
                             rs.getObject("deletion_batch_id", UUID.class),
                             rs.getBoolean("applies_to_all_hotels"),
-                            rs.getString("role_code"), rs.getString("role_type")
+                            rs.getString("position_code"), rs.getString("role_code"),
+                            rs.getString("role_type")
                     ));
         } catch (EmptyResultDataAccessException exception) {
             throw notFound();
@@ -1788,6 +1867,7 @@ public class PositionManagementService {
             long rowVersion,
             UUID deletionBatchId,
             boolean appliesToAllHotels,
+            String positionCode,
             String roleCode,
             String roleType
     ) {

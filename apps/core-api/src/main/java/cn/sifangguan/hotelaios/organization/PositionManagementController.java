@@ -27,8 +27,10 @@ public class PositionManagementController {
     }
 
     @GetMapping("/function-options")
-    public List<PositionManagementModels.PermissionOption> functionOptions() {
-        return service.functionOptions();
+    public List<PositionManagementModels.PermissionOption> functionOptions(
+            @RequestParam(required = false) UUID positionId
+    ) {
+        return service.functionOptions(positionId);
     }
 
     @PostMapping

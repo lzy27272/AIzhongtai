@@ -95,7 +95,8 @@ public final class PositionManagementModels {
             String permissionCode,
             String label,
             String category,
-            boolean delegable
+            boolean delegable,
+            String restrictionReason
     ) {
     }
 
