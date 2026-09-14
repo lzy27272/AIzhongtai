@@ -13,6 +13,9 @@ const manualInvitationMigration = readFileSync(new URL('../../../database/migrat
 const onboardingDefaultsMigration = readFileSync(new URL('../../../database/migrations/V44__enable_reviewed_wecom_onboarding_positions.sql', import.meta.url), 'utf8')
 const mobileRegistrationMigration = readFileSync(new URL('../../../database/migrations/V45__wecom_onboarding_mobile_registration.sql', import.meta.url), 'utf8')
 const pendingPositionMigration = readFileSync(new URL('../../../database/migrations/V48__wecom_onboarding_pending_position_assignment.sql', import.meta.url), 'utf8')
+const reusableInvitationMigration = readFileSync(new URL('../../../database/migrations/V49__reusable_wecom_onboarding_invitation.sql', import.meta.url), 'utf8')
+const onboardingService = readFileSync(new URL('../../core-api/src/main/java/cn/sifangguan/hotelaios/integrations/wecom/WeComDirectoryOnboardingService.java', import.meta.url), 'utf8')
+const onboardingAdministrationService = readFileSync(new URL('../../core-api/src/main/java/cn/sifangguan/hotelaios/integrations/wecom/WeComDirectoryOnboardingAdministrationService.java', import.meta.url), 'utf8')
 
 test('verified new members register their account before choosing assignment', () => {
   assert.match(entry, /个人姓名/)
@@ -69,10 +72,12 @@ test('migration reserves open logins and grants both HR reviewer roles', () => {
   assert.match(migration, /'wecom-onboarding\.review'/)
 })
 
-test('a single invitation entry performs reviewed mobile registration', () => {
+test('one reusable invitation entry performs independent reviewed mobile registrations', () => {
   assert.match(bindingAdministration, /createDirectoryOnboardingInvitation/)
   assert.match(bindingAdministration, /一键邀请/)
-  assert.match(bindingAdministration, /填写手机号、姓名、账号、密码、门店和岗位/)
+  assert.match(bindingAdministration, /同一二维码在有效期内可供多名员工分别使用/)
+  assert.match(bindingAdministration, /员工提交不会使二维码失效；仅在超过有效时间后失效/)
+  assert.match(bindingAdministration, /填写手机号、姓名、账号、密码、集团总部\/门店和岗位/)
   assert.doesNotMatch(bindingAdministration, /已有中台账号绑定|无中台账号注册/)
   assert.doesNotMatch(bindingAdministration, /createEmployeeInvitation|employeeInviteForm/)
   assert.match(api, /directory-onboarding\/invitations/)
@@ -92,9 +97,19 @@ test('manual invitations store no employee profile before verified registration'
   assert.match(manualInvitationMigration, /invitation_created_by/)
 })
 
+test('reusable invitation state is separated from every employee application', () => {
+  assert.match(reusableInvitationMigration, /CREATE TABLE wecom_open_onboarding_invitation/)
+  assert.match(reusableInvitationMigration, /ADD COLUMN open_invitation_id UUID/)
+  assert.match(reusableInvitationMigration, /FORCE ROW LEVEL SECURITY/)
+  assert.match(onboardingAdministrationService, /insert into wecom_open_onboarding_invitation/)
+  assert.match(onboardingService, /insert into wecom_person_onboarding/)
+  assert.match(onboardingService, /open_invitation_id/)
+  assert.match(onboardingService, /expires_at > now\(\)/)
+})
+
 test('registration hides unavailable positions and supports reviewer assignment', () => {
   assert.match(entry, /\.filter\(\(position\) => position\.selectable\)/)
-  assert.match(entry, /disabled=\{!hasHotelOptions\}/)
+  assert.match(entry, /disabled=\{!hasOrganizationOptions\}/)
   assert.doesNotMatch(entry, /disabled=\{!item\.selectable\}/)
   assert.doesNotMatch(entry, /unavailableReason/)
   assert.match(entry, /岗位待分配/)
@@ -109,7 +124,18 @@ test('registration hides unavailable positions and supports reviewer assignment'
   assert.doesNotMatch(onboardingDefaultsMigration, /GROUP_CHAIRMAN|GROUP_GENERAL_MANAGER|GROUP_VICE_PRESIDENT|HR_KPI_ADMIN|PLATFORM_ADMIN|OTA_OPERATION_MANAGER/)
 })
 
+test('registration supports group headquarters while protected group roles stay excluded', () => {
+  assert.match(api, /unitType: 'GROUP' \| 'HOTEL'/)
+  assert.match(entry, /选择组织/)
+  assert.match(entry, /请选择集团总部或门店/)
+  assert.match(entry, /item\.unitType === 'GROUP' \? '集团总部'/)
+  assert.match(entry, /集团受保护岗位不能通过入职审核授予/)
+  assert.match(onboardingService, /position\.job_family = 'GROUP_MANAGEMENT'/)
+  assert.match(onboardingService, /authorization_scope_type <> 'TENANT'/)
+  assert.match(onboardingService, /protected_permission\.delegable_to_position = false/)
+})
+
 test('hotel-direct positions do not repeat the hotel name in the position selector', () => {
-  assert.match(entry, /department\.id === hotel\?\.id \? position\.name/)
+  assert.match(entry, /department\.id === organization\?\.id \? position\.name/)
   assert.match(entry, /`\$\{department\.name\} · \$\{position\.name\}`/)
 })

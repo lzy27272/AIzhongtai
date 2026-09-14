@@ -15,7 +15,7 @@ type Selection = { orgUnitId: string; positionId: string }
 const oauthErrors = {
   OAUTH_SESSION_INVALID: {
     title: '验证会话已失效',
-    message: '本次入职邀请已过期、已使用或验证会话无效。请从企业微信重新打开最新邀请。',
+    message: '本次入职邀请已过期或验证会话无效。请从企业微信重新打开仍在有效期内的邀请。',
   },
   OAUTH_IDENTITY_MISMATCH: {
     title: '企业微信身份不匹配',
@@ -34,7 +34,7 @@ const oauthErrors = {
 export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: WecomBindingEntry; onReturn: () => void }) {
   const [sessionToken, setSessionToken] = useState<string>()
   const [context, setContext] = useState<DirectoryOnboardingContext>()
-  const [hotelId, setHotelId] = useState('')
+  const [organizationId, setOrganizationId] = useState('')
   const [selection, setSelection] = useState<Selection>({ orgUnitId: '', positionId: '' })
   const [displayName, setDisplayName] = useState('')
   const [mobile, setMobile] = useState('')
@@ -59,22 +59,22 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
         setContext(value)
         setDisplayName(value.displayName ?? '')
         setLoginName(value.loginName ?? '')
-        const firstHotel = value.hotels[0]
-        setHotelId(firstHotel?.id ?? '')
+        const firstOrganization = value.hotels[0]
+        setOrganizationId(firstOrganization?.id ?? '')
       })
       .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : '企业微信身份验证失败') })
       .finally(() => { if (active) setBusy(false) })
     return () => { active = false }
   }, [entry.exchangeCode])
 
-  const hotel = context?.hotels.find((item) => item.id === hotelId)
-  const positionOptions = useMemo(() => (hotel?.departments ?? []).flatMap((department) => department.positions.map((position) => ({
+  const organization = context?.hotels.find((item) => item.id === organizationId)
+  const positionOptions = useMemo(() => (organization?.departments ?? []).flatMap((department) => department.positions.map((position) => ({
     orgUnitId: department.id,
     positionId: position.id,
-    label: department.id === hotel?.id ? position.name : `${department.name} · ${position.name}`,
+    label: department.id === organization?.id ? position.name : `${department.name} · ${position.name}`,
     selectable: position.selectable,
-  }))).filter((position) => position.selectable), [hotel])
-  const hasHotelOptions = Boolean(context?.hotels.length)
+  }))).filter((position) => position.selectable), [organization])
+  const hasOrganizationOptions = Boolean(context?.hotels.length)
   const registrationValidation = validateDirectoryOnboardingRegistration({
     requiresAccountRegistration: Boolean(context?.requiresAccountRegistration),
     displayName, mobile, loginName, secret: password, secretConfirmation: passwordConfirmation,
@@ -124,7 +124,7 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
     <section className="wecom-onboarding-card submitted" aria-live="polite">
       <div className="onboarding-success" aria-hidden="true">{conflict ? '!' : '✓'}</div><h1>申请已提交</h1><h2>{conflict ? '身份关联异常，等待管理员核对' : '等待管理员确认'}</h2>
       <p>{conflict ? '系统发现该企业微信身份已有受控关联记录，人事审核前不会启用；您无需重复提交。' : '行政人事审核通过后，注册账号、任职权限与企业微信绑定会同时启用。'}</p>
-      <dl><div><dt>门店</dt><dd>{hotel?.name ?? '—'}</dd></div><div><dt>岗位</dt><dd>{selection.positionId ? positionOptions.find((item) => item.positionId === selection.positionId)?.label ?? '—' : '岗位待分配'}</dd></div><div><dt>状态</dt><dd>{conflict ? '异常待核对' : '待审核'}</dd></div></dl>
+      <dl><div><dt>申请组织</dt><dd>{organization?.name ?? '—'}</dd></div><div><dt>岗位</dt><dd>{selection.positionId ? positionOptions.find((item) => item.positionId === selection.positionId)?.label ?? '—' : '岗位待分配'}</dd></div><div><dt>状态</dt><dd>{conflict ? '异常待核对' : '待审核'}</dd></div></dl>
       <button className="primary" onClick={onReturn}>返回企业微信</button>
     </section>
   </main>
@@ -144,10 +144,10 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
           <label>登录密码<input type="password" value={password} minLength={10} maxLength={128} autoComplete="new-password" aria-invalid={Boolean(registrationValidation.errors.credential && (validationAttempted || password))} onChange={(event) => setPassword(event.target.value)} placeholder="10至128位" />{(validationAttempted || Boolean(password)) && registrationValidation.errors.credential && <small className="field-error">{registrationValidation.errors.credential}</small>}</label>
           <label>确认密码<input type="password" value={passwordConfirmation} minLength={10} maxLength={128} autoComplete="new-password" aria-invalid={Boolean(registrationValidation.errors.passwordConfirmation && (validationAttempted || passwordConfirmation))} onChange={(event) => setPasswordConfirmation(event.target.value)} placeholder="请再次输入密码" />{(validationAttempted || Boolean(passwordConfirmation)) && registrationValidation.errors.passwordConfirmation && <small className="field-error">{registrationValidation.errors.passwordConfirmation}</small>}</label>
         </div>}
-        {!hasHotelOptions && <div className="inline-error"><strong>暂无可申请门店</strong><p>当前没有启用中的门店，请联系行政人事核对组织配置。</p></div>}
-        <label>选择门店<select value={hotelId} disabled={!hasHotelOptions} onChange={(event) => { setHotelId(event.target.value); setSelection({ orgUnitId: '', positionId: '' }) }}><option value="">{hasHotelOptions ? '请选择门店' : '暂无可申请门店'}</option>{context.hotels.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-        <label>选择岗位<select value={`${selection.orgUnitId}:${selection.positionId}`} disabled={!hotelId} aria-invalid={Boolean(validationAttempted && registrationValidation.errors.assignment)} onChange={(event) => { const [orgUnitId, positionId] = event.target.value.split(':'); setSelection({ orgUnitId, positionId }) }}><option value=":">请选择岗位</option>{hotel && <option value={`${hotel.id}:`}>岗位待分配</option>}{positionOptions.map((item) => <option key={`${item.orgUnitId}:${item.positionId}`} value={`${item.orgUnitId}:${item.positionId}`}>{item.label}</option>)}</select>{validationAttempted && registrationValidation.errors.assignment && <small className="field-error">{registrationValidation.errors.assignment}</small>}</label>
-        {hotelId && <small className="onboarding-note">这里只展示后台已允许员工申请的岗位；如暂不确定，请选择“岗位待分配”，由审核员在审批时补充。</small>}
+        {!hasOrganizationOptions && <div className="inline-error"><strong>暂无可申请组织</strong><p>当前没有启用中的集团总部或门店，请联系行政人事核对组织配置。</p></div>}
+        <label>选择组织<select value={organizationId} disabled={!hasOrganizationOptions} onChange={(event) => { setOrganizationId(event.target.value); setSelection({ orgUnitId: '', positionId: '' }) }}><option value="">{hasOrganizationOptions ? '请选择集团总部或门店' : '暂无可申请组织'}</option>{context.hotels.map((item) => <option key={item.id} value={item.id}>{item.unitType === 'GROUP' ? '集团总部' : item.name}</option>)}</select></label>
+        <label>选择岗位<select value={`${selection.orgUnitId}:${selection.positionId}`} disabled={!organizationId} aria-invalid={Boolean(validationAttempted && registrationValidation.errors.assignment)} onChange={(event) => { const [orgUnitId, positionId] = event.target.value.split(':'); setSelection({ orgUnitId, positionId }) }}><option value=":">请选择岗位</option>{organization && <option value={`${organization.id}:`}>岗位待分配</option>}{positionOptions.map((item) => <option key={`${item.orgUnitId}:${item.positionId}`} value={`${item.orgUnitId}:${item.positionId}`}>{item.label}</option>)}</select>{validationAttempted && registrationValidation.errors.assignment && <small className="field-error">{registrationValidation.errors.assignment}</small>}</label>
+        {organizationId && <small className="onboarding-note">这里只展示后台已允许员工申请的岗位；如暂不确定，请选择“岗位待分配”，由审核员在审批时补充。集团受保护岗位不能通过入职审核授予。</small>}
         <small className="onboarding-note">提交后由行政人事或行政人事主管审核；审核前账号不可登录，也不会开通岗位权限。</small>
       </>}
       {busy && !context && <div className="wecom-entry-progress"><div className="spinner"/><strong>正在验证企业微信身份</strong></div>}

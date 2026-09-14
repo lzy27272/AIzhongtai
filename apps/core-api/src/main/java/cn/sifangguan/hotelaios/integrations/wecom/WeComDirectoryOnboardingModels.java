@@ -71,7 +71,12 @@ public final class WeComDirectoryOnboardingModels {
             long rowVersion
     ) { }
 
-    public record HotelOption(UUID id, String name, List<DepartmentOption> departments) { }
+    public record HotelOption(
+            UUID id,
+            String name,
+            String unitType,
+            List<DepartmentOption> departments
+    ) { }
     public record DepartmentOption(UUID id, String name, List<PositionOption> positions) { }
     public record PositionOption(
             UUID id,

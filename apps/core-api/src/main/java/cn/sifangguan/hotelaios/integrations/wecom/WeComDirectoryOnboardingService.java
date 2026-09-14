@@ -245,26 +245,74 @@ public class WeComDirectoryOnboardingService {
     public Start start(String invitationToken) {
         apply();
         String tokenHash = sha256(boundedSecret(invitationToken));
-        List<StartCandidate> rows = jdbc.query("""
-                select id, invitation_expires_at from wecom_person_onboarding
-                where tenant_id = :tenantId and corp_id = :corpId
-                  and invitation_token_hash = :tokenHash
-                  and status = 'WAITING_PROFILE' and directory_status = 'ACTIVE'
-                  and invitation_expires_at > now()
-                for update
-                """, params().addValue("tokenHash", tokenHash), (rs, rowNum) -> new StartCandidate(
-                rs.getObject("id", UUID.class), rs.getObject("invitation_expires_at", OffsetDateTime.class)));
-        if (rows.size() != 1) throw new IllegalArgumentException("入职邀请不存在、已过期或不可继续");
-        StartCandidate candidate = rows.getFirst();
         String state = randomSecret();
         String verifier = randomSecret();
-        jdbc.update("""
-                update wecom_person_onboarding
-                set oauth_state_hash = :stateHash, browser_verifier_hash = :verifierHash,
-                    provider_code_hash = null, failure_code = null, row_version = row_version + 1
-                where tenant_id = :tenantId and id = :id
-                """, params().addValue("id", candidate.id()).addValue("stateHash", sha256(state))
-                .addValue("verifierHash", sha256(verifier)));
+        List<ReusableInvitation> reusable = jdbc.query("""
+                select id, expires_at, created_by
+                from wecom_open_onboarding_invitation
+                where tenant_id = :tenantId and corp_id = :corpId
+                  and token_hash = :tokenHash and expires_at > now()
+                for share
+                """, params().addValue("tokenHash", tokenHash), (rs, rowNum) ->
+                new ReusableInvitation(
+                        rs.getObject("id", UUID.class),
+                        rs.getObject("expires_at", OffsetDateTime.class),
+                        rs.getObject("created_by", UUID.class)));
+        if (reusable.size() > 1) throw new IllegalStateException("入职邀请数据不唯一");
+
+        StartCandidate candidate;
+        if (reusable.size() == 1) {
+            ReusableInvitation invitation = reusable.getFirst();
+            UUID candidateId = UUID.randomUUID();
+            OffsetDateTime startedAt = OffsetDateTime.now();
+            String placeholderFingerprint = sha256(
+                    "open-invitation:" + invitation.id() + ":" + candidateId);
+            jdbc.update("""
+                    insert into wecom_person_onboarding
+                        (id, tenant_id, corp_id, user_id_fingerprint, display_name,
+                         onboarding_kind, directory_status, status,
+                         invitation_token_hash, invitation_issued_at, invitation_expires_at,
+                         oauth_state_hash, browser_verifier_hash,
+                         source_event_hash, last_event_at,
+                         invitation_source, invitation_created_by, open_invitation_id)
+                    values
+                        (:id, :tenantId, :corpId, :fingerprint, '待员工填写',
+                         'NEW_MEMBER', 'ACTIVE', 'WAITING_PROFILE',
+                         :candidateTokenHash, :startedAt, :expiresAt,
+                         :stateHash, :verifierHash,
+                         :sourceHash, :startedAt,
+                         'MANUAL_LINK', :createdBy, :openInvitationId)
+                    """, params().addValue("id", candidateId)
+                    .addValue("fingerprint", placeholderFingerprint)
+                    .addValue("candidateTokenHash", sha256(randomSecret()))
+                    .addValue("startedAt", startedAt)
+                    .addValue("expiresAt", invitation.expiresAt())
+                    .addValue("stateHash", sha256(state))
+                    .addValue("verifierHash", sha256(verifier))
+                    .addValue("sourceHash", sha256("open-invitation-candidate:" + candidateId))
+                    .addValue("createdBy", invitation.createdBy())
+                    .addValue("openInvitationId", invitation.id()));
+            candidate = new StartCandidate(candidateId, invitation.expiresAt());
+        } else {
+            List<StartCandidate> rows = jdbc.query("""
+                    select id, invitation_expires_at from wecom_person_onboarding
+                    where tenant_id = :tenantId and corp_id = :corpId
+                      and invitation_token_hash = :tokenHash
+                      and status = 'WAITING_PROFILE' and directory_status = 'ACTIVE'
+                      and invitation_expires_at > now()
+                    for update
+                    """, params().addValue("tokenHash", tokenHash), (rs, rowNum) -> new StartCandidate(
+                    rs.getObject("id", UUID.class), rs.getObject("invitation_expires_at", OffsetDateTime.class)));
+            if (rows.size() != 1) throw new IllegalArgumentException("入职邀请不存在、已过期或不可继续");
+            candidate = rows.getFirst();
+            jdbc.update("""
+                    update wecom_person_onboarding
+                    set oauth_state_hash = :stateHash, browser_verifier_hash = :verifierHash,
+                        provider_code_hash = null, failure_code = null, row_version = row_version + 1
+                    where tenant_id = :tenantId and id = :id
+                    """, params().addValue("id", candidate.id()).addValue("stateHash", sha256(state))
+                    .addValue("verifierHash", sha256(verifier)));
+        }
         URI authorizationUri = UriComponentsBuilder.fromUriString(
                         "https://open.weixin.qq.com/connect/oauth2/authorize")
                 .queryParam("appid", properties.corpId())
@@ -371,7 +419,7 @@ public class WeComDirectoryOnboardingService {
             throw new IllegalArgumentException("申请已变化，请刷新后重试");
         }
         if (request.positionId() == null) {
-            requirePendingAssignmentHotel(request.orgUnitId());
+            requirePendingAssignmentOrganization(request.orgUnitId());
         } else {
             requireSelectable(request.orgUnitId(), request.positionId());
         }
@@ -957,23 +1005,32 @@ public class WeComDirectoryOnboardingService {
     private List<HotelOption> loadOptions() {
         Map<UUID, HotelBuilder> hotels = new LinkedHashMap<>();
         jdbc.query("""
-                select id, name
+                select id,
+                       case when unit_type = 'GROUP' then '集团总部' else name end as name,
+                       unit_type
                 from org_unit
-                where tenant_id = :tenantId and unit_type = 'HOTEL' and status = 'ACTIVE'
-                order by name, id
+                where tenant_id = :tenantId and status = 'ACTIVE'
+                  and ((unit_type = 'GROUP' and parent_id is null) or unit_type = 'HOTEL')
+                order by case unit_type when 'GROUP' then 0 else 1 end, name, id
                 """, params(), rs -> {
             UUID hotelId = rs.getObject("id", UUID.class);
-            hotels.put(hotelId, new HotelBuilder(hotelId, rs.getString("name")));
+            hotels.put(hotelId, new HotelBuilder(
+                    hotelId, rs.getString("name"), rs.getString("unit_type")));
         });
         List<OptionRow> rows = jdbc.query("""
-                select hotel.id as hotel_id, hotel.name as hotel_name,
-                       hotel.id as department_id, hotel.name as department_name,
+                select organization.id as hotel_id,
+                       case when organization.unit_type = 'GROUP'
+                            then '集团总部' else organization.name end as hotel_name,
+                       organization.unit_type as organization_type,
+                       organization.id as department_id,
+                       case when organization.unit_type = 'GROUP'
+                            then '集团总部' else organization.name end as department_name,
                        position.id as position_id, position.name as position_name,
                        true as position_selectable,
                        cast(null as text) as unavailable_reason
-                from org_unit hotel
+                from org_unit organization
                 join position_definition position
-                  on position.tenant_id = hotel.tenant_id and position.status = 'ACTIVE'
+                  on position.tenant_id = organization.tenant_id and position.status = 'ACTIVE'
                  and position.deleted_at is null and position.permanently_deleted_at is null
                 join position_function_profile group_profile
                   on group_profile.tenant_id = position.tenant_id
@@ -988,44 +1045,66 @@ public class WeComDirectoryOnboardingService {
                   on hotel_profile.tenant_id = position.tenant_id
                  and hotel_profile.position_id = position.id
                  and hotel_profile.scope_type = 'HOTEL'
-                 and hotel_profile.hotel_org_unit_id = hotel.id
+                 and hotel_profile.hotel_org_unit_id = organization.id
                 left join position_function_profile_version hotel_version
                   on hotel_version.tenant_id = hotel_profile.tenant_id
                  and hotel_version.profile_id = hotel_profile.id
                  and hotel_version.lifecycle_status = 'PUBLISHED'
-                where hotel.tenant_id = :tenantId and hotel.unit_type = 'HOTEL'
-                  and hotel.status = 'ACTIVE'
+                where organization.tenant_id = :tenantId and organization.status = 'ACTIVE'
+                  and ((organization.unit_type = 'GROUP' and organization.parent_id is null)
+                       or organization.unit_type = 'HOTEL')
                   and coalesce(hotel_version.wecom_self_selectable,
                                group_version.wecom_self_selectable) = true
-                  and (position.applies_to_all_hotels = true or exists (
-                      select 1 from position_applicable_hotel applicable
-                      where applicable.tenant_id = position.tenant_id
-                        and applicable.position_id = position.id
-                        and applicable.hotel_org_unit_id = hotel.id
-                  ))
-                order by hotel.name, position.name, position.id
+                  and (
+                    (organization.unit_type = 'GROUP'
+                     and position.job_family = 'GROUP_MANAGEMENT'
+                     and group_version.authorization_scope_type <> 'TENANT'
+                     and not exists (
+                       select 1
+                       from role_permission protected_grant
+                       join permission protected_permission
+                         on protected_permission.id = protected_grant.permission_id
+                       where protected_grant.tenant_id = group_profile.tenant_id
+                         and protected_grant.role_id = group_profile.default_role_id
+                         and protected_permission.delegable_to_position = false
+                     ))
+                    or
+                    (organization.unit_type = 'HOTEL' and (
+                      position.applies_to_all_hotels = true or exists (
+                        select 1 from position_applicable_hotel applicable
+                        where applicable.tenant_id = position.tenant_id
+                          and applicable.position_id = position.id
+                          and applicable.hotel_org_unit_id = organization.id
+                      )
+                    ))
+                  )
+                order by case organization.unit_type when 'GROUP' then 0 else 1 end,
+                         organization.name, position.name, position.id
                 """, params(), (rs, rowNum) -> new OptionRow(
                 rs.getObject("hotel_id", UUID.class), rs.getString("hotel_name"),
+                rs.getString("organization_type"),
                 rs.getObject("department_id", UUID.class), rs.getString("department_name"),
                 rs.getObject("position_id", UUID.class), rs.getString("position_name"),
                 rs.getBoolean("position_selectable"), rs.getString("unavailable_reason")));
         for (OptionRow row : rows) {
             HotelBuilder hotel = hotels.computeIfAbsent(row.hotelId(),
-                    ignored -> new HotelBuilder(row.hotelId(), row.hotelName()));
+                    ignored -> new HotelBuilder(
+                            row.hotelId(), row.hotelName(), row.organizationType()));
             hotel.add(row);
         }
         return hotels.values().stream().map(HotelBuilder::build).toList();
     }
 
-    private void requirePendingAssignmentHotel(UUID orgUnitId) {
+    private void requirePendingAssignmentOrganization(UUID orgUnitId) {
         Integer count = jdbc.queryForObject("""
                 select count(*)
                 from org_unit
                 where tenant_id = :tenantId and id = :orgUnitId
-                  and unit_type = 'HOTEL' and status = 'ACTIVE'
+                  and status = 'ACTIVE'
+                  and ((unit_type = 'GROUP' and parent_id is null) or unit_type = 'HOTEL')
                 """, params().addValue("orgUnitId", orgUnitId), Integer.class);
         if (count == null || count != 1) {
-            throw new IllegalArgumentException("所选门店已失效，不能提交岗位待分配申请");
+            throw new IllegalArgumentException("所选组织已失效，不能提交岗位待分配申请");
         }
     }
 
@@ -1033,12 +1112,18 @@ public class WeComDirectoryOnboardingService {
         Integer count = jdbc.queryForObject("""
                 select count(*)
                 from org_unit assignment_org
-                join org_unit_closure closure
-                  on closure.tenant_id = assignment_org.tenant_id
-                 and closure.descendant_id = assignment_org.id
-                join org_unit hotel
-                  on hotel.tenant_id = closure.tenant_id and hotel.id = closure.ancestor_id
-                 and hotel.unit_type = 'HOTEL' and hotel.status = 'ACTIVE'
+                left join lateral (
+                    select ancestor.id
+                    from org_unit_closure closure
+                    join org_unit ancestor
+                      on ancestor.tenant_id = closure.tenant_id
+                     and ancestor.id = closure.ancestor_id
+                    where closure.tenant_id = assignment_org.tenant_id
+                      and closure.descendant_id = assignment_org.id
+                      and ancestor.unit_type = 'HOTEL' and ancestor.status = 'ACTIVE'
+                    order by closure.depth asc
+                    limit 1
+                ) hotel on true
                 join position_definition position
                   on position.tenant_id = assignment_org.tenant_id and position.id = :positionId
                  and position.status = 'ACTIVE' and position.deleted_at is null
@@ -1054,24 +1139,42 @@ public class WeComDirectoryOnboardingService {
                  and group_version.lifecycle_status = 'PUBLISHED'
                 left join position_function_profile hotel_profile
                   on hotel_profile.tenant_id = position.tenant_id
-                 and hotel_profile.position_id = position.id
-                 and hotel_profile.scope_type = 'HOTEL'
+                  and hotel_profile.position_id = position.id
+                  and hotel_profile.scope_type = 'HOTEL'
                  and hotel_profile.hotel_org_unit_id = hotel.id
                 left join position_function_profile_version hotel_version
                   on hotel_version.tenant_id = hotel_profile.tenant_id
                  and hotel_version.profile_id = hotel_profile.id
                  and hotel_version.lifecycle_status = 'PUBLISHED'
                 where assignment_org.tenant_id = :tenantId and assignment_org.id = :orgUnitId
-                  and assignment_org.unit_type in ('HOTEL', 'DEPARTMENT')
                   and assignment_org.status = 'ACTIVE'
+                  and ((assignment_org.unit_type = 'GROUP' and assignment_org.parent_id is null)
+                       or assignment_org.unit_type in ('HOTEL', 'DEPARTMENT'))
                   and coalesce(hotel_version.wecom_self_selectable,
                                group_version.wecom_self_selectable) = true
-                  and (position.applies_to_all_hotels = true or exists (
-                      select 1 from position_applicable_hotel applicable
-                      where applicable.tenant_id = position.tenant_id
-                        and applicable.position_id = position.id
-                        and applicable.hotel_org_unit_id = hotel.id
-                  ))
+                  and (
+                    (assignment_org.unit_type = 'GROUP'
+                     and position.job_family = 'GROUP_MANAGEMENT'
+                     and group_version.authorization_scope_type <> 'TENANT'
+                     and not exists (
+                       select 1
+                       from role_permission protected_grant
+                       join permission protected_permission
+                         on protected_permission.id = protected_grant.permission_id
+                       where protected_grant.tenant_id = group_profile.tenant_id
+                         and protected_grant.role_id = group_profile.default_role_id
+                         and protected_permission.delegable_to_position = false
+                     ))
+                    or
+                    (assignment_org.unit_type in ('HOTEL', 'DEPARTMENT')
+                     and hotel.id is not null
+                     and (position.applies_to_all_hotels = true or exists (
+                       select 1 from position_applicable_hotel applicable
+                       where applicable.tenant_id = position.tenant_id
+                         and applicable.position_id = position.id
+                         and applicable.hotel_org_unit_id = hotel.id
+                     )))
+                  )
                 """, params().addValue("orgUnitId", orgUnitId).addValue("positionId", positionId),
                 Integer.class);
         if (count == null || count != 1) {
@@ -1429,6 +1532,7 @@ public class WeComDirectoryOnboardingService {
         String resultCode() { return resultCode; }
     }
     private record StartCandidate(UUID id, OffsetDateTime expiresAt) { }
+    private record ReusableInvitation(UUID id, OffsetDateTime expiresAt, UUID createdBy) { }
     private record SessionCandidate(UUID id, String status) { }
     private record CandidateSession(
             UUID id,
@@ -1459,7 +1563,8 @@ public class WeComDirectoryOnboardingService {
     ) { }
     private record ExpiredCandidate(UUID id, String fingerprint) { }
     private record OptionRow(
-            UUID hotelId, String hotelName, UUID departmentId, String departmentName,
+            UUID hotelId, String hotelName, String organizationType,
+            UUID departmentId, String departmentName,
             UUID positionId, String positionName, boolean positionSelectable,
             String unavailableReason
     ) { }
@@ -1467,8 +1572,13 @@ public class WeComDirectoryOnboardingService {
     private static final class HotelBuilder {
         private final UUID id;
         private final String name;
+        private final String unitType;
         private final Map<UUID, DepartmentBuilder> departments = new LinkedHashMap<>();
-        private HotelBuilder(UUID id, String name) { this.id = id; this.name = name; }
+        private HotelBuilder(UUID id, String name, String unitType) {
+            this.id = id;
+            this.name = name;
+            this.unitType = unitType;
+        }
         private void add(OptionRow row) {
             departments.computeIfAbsent(row.departmentId(),
                     ignored -> new DepartmentBuilder(row.departmentId(), row.departmentName()))
@@ -1476,7 +1586,9 @@ public class WeComDirectoryOnboardingService {
                             row.unavailableReason());
         }
         private HotelOption build() {
-            return new HotelOption(id, name, departments.values().stream().map(DepartmentBuilder::build).toList());
+            return new HotelOption(
+                    id, name, unitType,
+                    departments.values().stream().map(DepartmentBuilder::build).toList());
         }
     }
 

@@ -54,6 +54,7 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
     private static final UUID TENANT = UUID.fromString("10000000-0000-0000-0000-000000000001");
     private static final UUID CEO = UUID.fromString("19000000-0000-0000-0000-000000000001");
     private static final UUID FRONT_ACCOUNT = UUID.fromString("19000000-0000-0000-0000-000000000003");
+    private static final UUID GROUP_HEADQUARTERS = UUID.fromString("12000000-0000-0000-0000-000000000001");
     private static final UUID SECOND_HOTEL = UUID.fromString("12000000-0000-0000-0000-000000000004");
     private static final UUID FRONT_DEPARTMENT = UUID.fromString("12000000-0000-0000-0000-000000000005");
     private static final UUID HOUSEKEEPING_DEPARTMENT = UUID.fromString("12000000-0000-0000-0000-000000000006");
@@ -94,6 +95,7 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
         jdbc = new JdbcTemplate(DATA_SOURCE);
         transactionManager = new DataSourceTransactionManager(DATA_SOURCE);
         jdbc.update("delete from wecom_person_onboarding where corp_id = ?", CORP_ID);
+        jdbc.update("delete from wecom_open_onboarding_invitation where corp_id = ?", CORP_ID);
         jdbc.update("delete from wecom_user_binding where corp_id = ?", CORP_ID);
         jdbc.update("delete from wecom_directory_event_receipt where corp_id = ?", CORP_ID);
 
@@ -108,6 +110,9 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
         when(properties.corpId()).thenReturn(CORP_ID);
         when(properties.encryptionKey()).thenReturn(ENCRYPTION_KEY);
         when(properties.frontendBaseUrl()).thenReturn(URI.create("https://www.sfgzt.cn"));
+        when(properties.oauthCallbackUrl()).thenReturn(URI.create(
+                "https://www.sfgzt.cn/api/v1/integrations/wecom/directory-onboarding/oauth/callback"));
+        when(properties.agentId()).thenReturn(1000002L);
         when(properties.invitationTtl()).thenReturn(Duration.ofMinutes(120));
         when(properties.exchangeTtl()).thenReturn(Duration.ofMinutes(2));
         codec = new WeComDirectorySecretCodec(properties);
@@ -133,7 +138,7 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
     }
 
     @Test
-    void manualInvitationCreatesOnlyAOneTimeRegistrationLink() {
+    void manualInvitationCreatesAReusableRegistrationLinkWithoutAnApplicant() {
         Counts before = identityCounts();
 
         OpenInvitationResponse response = inTransaction(service::createOpenInvitation);
@@ -142,34 +147,75 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
                 .startsWith("https://www.sfgzt.cn/#/wecom-onboarding?token=");
         assertThat(response.status()).isEqualTo("WAITING_PROFILE");
         assertThat(response.message()).contains("员工").contains("自行填写");
+        assertThat(response.message()).contains("多人").contains("独立");
         assertThat(jdbc.queryForMap("""
-                select invitation_source, invitation_created_by, display_name,
-                       requested_display_name, requested_login_name,
-                       requested_org_unit_id, requested_position_id,
-                       user_id_ciphertext, status,
-                       invitation_token_hash is not null as has_token
-                from wecom_person_onboarding where id = ?
+                select created_by, expires_at > now() as active,
+                       token_hash is not null as has_token
+                from wecom_open_onboarding_invitation where id = ?
                 """, response.candidateId()))
-                .containsEntry("invitation_source", "MANUAL_LINK")
-                .containsEntry("invitation_created_by", CEO)
-                .containsEntry("display_name", "待员工填写")
-                .containsEntry("status", "WAITING_PROFILE")
-                .containsEntry("has_token", true)
-                .containsEntry("requested_display_name", null)
-                .containsEntry("requested_login_name", null)
-                .containsEntry("requested_org_unit_id", null)
-                .containsEntry("requested_position_id", null)
-                .containsEntry("user_id_ciphertext", null);
+                .containsEntry("created_by", CEO)
+                .containsEntry("active", true)
+                .containsEntry("has_token", true);
+        assertThat(jdbc.queryForObject("""
+                select count(*) from wecom_person_onboarding
+                where open_invitation_id = ?
+                """, Integer.class, response.candidateId())).isZero();
         assertThat(identityCounts()).isEqualTo(before);
+    }
+
+    @Test
+    void reusableInvitationCreatesIndependentConcurrentApplicantsAndRemainsValid() throws Exception {
+        OpenInvitationResponse invitation = inTransaction(service::createOpenInvitation);
+        WeComDirectoryOnboardingService lifecycle = lifecycleService();
+        String token = openInvitationToken(invitation);
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        Callable<Void> scan = () -> {
+            ready.countDown();
+            assertThat(start.await(5, TimeUnit.SECONDS)).isTrue();
+            inTransaction(() -> lifecycle.start(token));
+            return null;
+        };
+        try {
+            Future<Void> first = executor.submit(scan);
+            Future<Void> second = executor.submit(scan);
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            first.get(10, TimeUnit.SECONDS);
+            second.get(10, TimeUnit.SECONDS);
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertThat(jdbc.queryForList("""
+                select id from wecom_person_onboarding
+                where open_invitation_id = ? order by id
+                """, UUID.class, invitation.candidateId()))
+                .hasSize(2)
+                .doesNotHaveDuplicates();
+        assertThat(jdbc.queryForMap("""
+                select expires_at > now() as active,
+                       token_hash is not null as reusable_token_preserved
+                from wecom_open_onboarding_invitation where id = ?
+                """, invitation.candidateId()))
+                .containsEntry("active", true)
+                .containsEntry("reusable_token_preserved", true);
+        assertThat(jdbc.queryForObject("""
+                select count(distinct oauth_state_hash) = 2
+                from wecom_person_onboarding where open_invitation_id = ?
+                """, Boolean.class, invitation.candidateId())).isTrue();
     }
 
     @Test
     void manualInvitationAdoptsVerifiedWeComIdentityWithoutPrefillingProfile() {
         OpenInvitationResponse response = inTransaction(service::createOpenInvitation);
         String userId = "manual-onboarding-" + UUID.randomUUID();
+        WeComDirectoryOnboardingService lifecycle = lifecycleService();
+        UUID candidateId = startReusableCandidate(response, lifecycle);
 
-        URI redirect = inTransaction(() -> lifecycleService().completeOAuth(
-                response.candidateId(), userId));
+        URI redirect = inTransaction(() -> lifecycle.completeOAuth(candidateId, userId));
 
         assertThat(redirect.toString())
                 .startsWith("https://www.sfgzt.cn/#/wecom-onboarding?exchange_code=");
@@ -179,7 +225,7 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
                        requested_display_name, requested_login_name,
                        requested_org_unit_id, requested_position_id
                 from wecom_person_onboarding where id = ?
-                """, response.candidateId());
+                """, candidateId);
         assertThat(row)
                 .containsEntry("user_id_fingerprint", codec.fingerprint(userId))
                 .containsEntry("verified", true)
@@ -197,14 +243,15 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
         try {
             OpenInvitationResponse invitation = inTransaction(service::createOpenInvitation);
             WeComDirectoryOnboardingService lifecycle = lifecycleService();
+            UUID candidateId = startReusableCandidate(invitation, lifecycle);
             inTransaction(() -> lifecycle.completeOAuth(
-                    invitation.candidateId(), "hotel-direct-" + UUID.randomUUID()));
+                    candidateId, "hotel-direct-" + UUID.randomUUID()));
             String session = "hotel-direct-session-" + UUID.randomUUID();
             jdbc.update("""
                     update wecom_person_onboarding
                     set session_token_hash = ?, session_expires_at = now() + interval '10 minutes'
                     where id = ?
-                    """, WeComDirectorySecretCodec.sha256(session), invitation.candidateId());
+                    """, WeComDirectorySecretCodec.sha256(session), candidateId);
 
             var context = inTransaction(() -> lifecycle.context(session));
             var hotel = context.hotels().stream()
@@ -226,19 +273,19 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
 
             SubmitResponse submitted = inTransaction(() -> lifecycle.submit(new SubmitRequest(
                     session, "Hotel direct employee", "13900004601",
-                    "hotel.direct." + invitation.candidateId(),
+                    "hotel.direct." + candidateId,
                     "Directory-Test-Password-2026", "Directory-Test-Password-2026",
                     SECOND_HOTEL, null, context.rowVersion())));
 
             assertThat(submitted.status()).isEqualTo("PENDING_APPROVAL");
             assertThat(uuidValue("select requested_org_unit_id from wecom_person_onboarding where id = ?",
-                    invitation.candidateId())).isEqualTo(SECOND_HOTEL);
+                    candidateId)).isEqualTo(SECOND_HOTEL);
             assertThat(jdbc.queryForObject(
                     "select requested_position_id is null from wecom_person_onboarding where id = ?",
-                    Boolean.class, invitation.candidateId())).isTrue();
+                    Boolean.class, candidateId)).isTrue();
 
             assertThat(inTransaction(() -> service.list(null)).items())
-                    .filteredOn(candidate -> invitation.candidateId().equals(candidate.id()))
+                    .filteredOn(candidate -> candidateId.equals(candidate.id()))
                     .singleElement()
                     .satisfies(candidate -> {
                         assertThat(candidate.status()).isEqualTo("PENDING_APPROVAL");
@@ -258,7 +305,7 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
                       and version.lifecycle_status = 'PUBLISHED'
                     """, TENANT, FRONT_POSITION);
 
-            var reviewOptions = inTransaction(() -> service.reviewOptions(invitation.candidateId()));
+            var reviewOptions = inTransaction(() -> service.reviewOptions(candidateId));
             assertThat(reviewOptions.hotelId()).isEqualTo(SECOND_HOTEL);
             assertThat(reviewOptions.positions())
                     .extracting(WeComDirectoryOnboardingModels.ReviewAssignmentOption::positionId)
@@ -267,13 +314,13 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
                     .noneMatch(position -> "OTA运营经理".equals(position.name()));
 
             assertThatThrownBy(() -> inTransaction(() -> service.approve(
-                    invitation.candidateId(), new DecisionRequest(
+                    candidateId, new DecisionRequest(
                             submitted.rowVersion(), "missing assignment", false))))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessage("请先为员工分配具体岗位再确认启用");
 
             ApprovalResponse approved = inTransaction(() -> service.approve(
-                    invitation.candidateId(), new DecisionRequest(
+                    candidateId, new DecisionRequest(
                             submitted.rowVersion(), "hotel direct reviewed", false,
                             SECOND_HOTEL, FRONT_POSITION)));
             assertThat(approved.status()).isEqualTo("APPROVED");
@@ -286,7 +333,7 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
                     where employee_item.account_id = ? and assignment.status = 'ACTIVE'
                     """, approved.accountId())).isEqualTo(SECOND_HOTEL);
             assertThat(uuidValue("select requested_position_id from wecom_person_onboarding where id = ?",
-                    invitation.candidateId())).isEqualTo(FRONT_POSITION);
+                    candidateId)).isEqualTo(FRONT_POSITION);
         } finally {
             jdbc.update("update org_unit set status = 'INACTIVE' where tenant_id = ? and id = ?",
                     TENANT, SECOND_HOTEL);
@@ -294,32 +341,116 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
     }
 
     @Test
+    void registrationCanChooseGroupHeadquartersAndReviewerOnlySeesSafeGroupPositions() {
+        OpenInvitationResponse invitation = inTransaction(service::createOpenInvitation);
+        WeComDirectoryOnboardingService lifecycle = lifecycleService();
+        UUID candidateId = startReusableCandidate(invitation, lifecycle);
+        inTransaction(() -> lifecycle.completeOAuth(
+                candidateId, "group-headquarters-" + UUID.randomUUID()));
+        String session = "group-headquarters-session-" + UUID.randomUUID();
+        jdbc.update("""
+                update wecom_person_onboarding
+                set session_token_hash = ?, session_expires_at = now() + interval '10 minutes'
+                where id = ?
+                """, WeComDirectorySecretCodec.sha256(session), candidateId);
+
+        var context = inTransaction(() -> lifecycle.context(session));
+        assertThat(context.hotels())
+                .filteredOn(option -> GROUP_HEADQUARTERS.equals(option.id()))
+                .singleElement()
+                .satisfies(option -> {
+                    assertThat(option.name()).isEqualTo("集团总部");
+                    assertThat(option.unitType()).isEqualTo("GROUP");
+                });
+
+        SubmitResponse submitted = inTransaction(() -> lifecycle.submit(new SubmitRequest(
+                session, "Group headquarters employee", "13900004609",
+                "group.headquarters." + candidateId,
+                "Directory-Test-Password-2026", "Directory-Test-Password-2026",
+                GROUP_HEADQUARTERS, null, context.rowVersion())));
+
+        assertThat(submitted.status()).isEqualTo("PENDING_APPROVAL");
+        assertThat(inTransaction(() -> service.list(null)).items())
+                .filteredOn(candidate -> candidateId.equals(candidate.id()))
+                .singleElement()
+                .satisfies(candidate -> assertThat(candidate.requestedHotelName())
+                        .isEqualTo("集团总部"));
+
+        var reviewOptions = inTransaction(() -> service.reviewOptions(candidateId));
+        assertThat(reviewOptions.hotelId()).isEqualTo(GROUP_HEADQUARTERS);
+        assertThat(reviewOptions.hotelName()).isEqualTo("集团总部");
+        assertThat(reviewOptions.positions()).isNotEmpty();
+        assertThat(reviewOptions.positions())
+                .noneMatch(position -> "集团董事长".equals(position.name()));
+        assertThat(reviewOptions.positions()).allSatisfy(position -> {
+            assertThat(jdbc.queryForObject("""
+                    select position.job_family = 'GROUP_MANAGEMENT'
+                           and version.authorization_scope_type <> 'TENANT'
+                           and not exists (
+                               select 1 from role_permission grant_item
+                               join permission permission_item
+                                 on permission_item.id = grant_item.permission_id
+                               where grant_item.tenant_id = profile.tenant_id
+                                 and grant_item.role_id = profile.default_role_id
+                                 and permission_item.delegable_to_position = false
+                           )
+                    from position_definition position
+                    join position_function_profile profile
+                      on profile.tenant_id = position.tenant_id
+                     and profile.position_id = position.id
+                     and profile.scope_type = 'GROUP'
+                    join position_function_profile_version version
+                      on version.tenant_id = profile.tenant_id
+                     and version.profile_id = profile.id
+                     and version.lifecycle_status = 'PUBLISHED'
+                    where position.tenant_id = ? and position.id = ?
+                    """, Boolean.class, TENANT, position.positionId())).isTrue();
+        });
+
+        var approvedPosition = reviewOptions.positions().getFirst();
+        ApprovalResponse approved = inTransaction(() -> service.approve(
+                candidateId, new DecisionRequest(
+                        submitted.rowVersion(), "group headquarters reviewed", false,
+                        GROUP_HEADQUARTERS, approvedPosition.positionId())));
+        assertThat(approved.status()).isEqualTo("APPROVED");
+        assertThat(uuidValue("""
+                select assignment.org_unit_id
+                from employee_position_assignment assignment
+                join employee employee_item
+                  on employee_item.tenant_id = assignment.tenant_id
+                 and employee_item.id = assignment.employee_id
+                where employee_item.account_id = ? and assignment.status = 'ACTIVE'
+                """, approved.accountId())).isEqualTo(GROUP_HEADQUARTERS);
+    }
+
+    @Test
     void reviewedRegistrationCopiesMobileToTheApprovedAccountAndEmployee() {
         OpenInvitationResponse invitation = inTransaction(service::createOpenInvitation);
         WeComDirectoryOnboardingService lifecycle = lifecycleService();
+        UUID candidateId = startReusableCandidate(invitation, lifecycle);
         inTransaction(() -> lifecycle.completeOAuth(
-                invitation.candidateId(), "mobile-registration-" + UUID.randomUUID()));
+                candidateId, "mobile-registration-" + UUID.randomUUID()));
         String session = "mobile-session-" + UUID.randomUUID();
         jdbc.update("""
                 update wecom_person_onboarding
                 set session_token_hash = ?, session_expires_at = now() + interval '10 minutes'
                 where id = ?
-                """, WeComDirectorySecretCodec.sha256(session), invitation.candidateId());
+                """, WeComDirectorySecretCodec.sha256(session), candidateId);
         long version = jdbc.queryForObject(
                 "select row_version from wecom_person_onboarding where id = ?",
-                Long.class, invitation.candidateId());
+                Long.class, candidateId);
 
         SubmitResponse submitted = inTransaction(() -> lifecycle.submit(new SubmitRequest(
                 session, "Mobile employee", "13900004501",
-                "mobile.employee." + invitation.candidateId(),
+                "mobile.employee." + candidateId,
                 "Directory-Test-Password-2026", "Directory-Test-Password-2026",
                 FRONT_DEPARTMENT, FRONT_POSITION, version)));
         assertThat(jdbc.queryForObject("""
                 select requested_mobile from wecom_person_onboarding where id = ?
-                """, String.class, invitation.candidateId())).isEqualTo("13900004501");
+                """, String.class, candidateId)).isEqualTo("13900004501");
 
         ApprovalResponse approved = inTransaction(() -> service.approve(
-                invitation.candidateId(), new DecisionRequest(
+                candidateId, new DecisionRequest(
                         submitted.rowVersion(), "mobile reviewed", false)));
 
         assertThat(jdbc.queryForObject(
@@ -334,23 +465,24 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
     void registrationRejectsAMobileThatAlreadyBelongsToAPlatformAccount() {
         OpenInvitationResponse invitation = inTransaction(service::createOpenInvitation);
         WeComDirectoryOnboardingService lifecycle = lifecycleService();
+        UUID candidateId = startReusableCandidate(invitation, lifecycle);
         inTransaction(() -> lifecycle.completeOAuth(
-                invitation.candidateId(), "duplicate-mobile-" + UUID.randomUUID()));
+                candidateId, "duplicate-mobile-" + UUID.randomUUID()));
         String session = "duplicate-mobile-session-" + UUID.randomUUID();
         jdbc.update("""
                 update wecom_person_onboarding
                 set session_token_hash = ?, session_expires_at = now() + interval '10 minutes'
                 where id = ?
-                """, WeComDirectorySecretCodec.sha256(session), invitation.candidateId());
+                """, WeComDirectorySecretCodec.sha256(session), candidateId);
         long version = jdbc.queryForObject(
                 "select row_version from wecom_person_onboarding where id = ?",
-                Long.class, invitation.candidateId());
+                Long.class, candidateId);
         String registeredMobile = jdbc.queryForObject(
                 "select mobile from user_account where id = ?", String.class, FRONT_ACCOUNT);
 
         assertThatThrownBy(() -> inTransaction(() -> lifecycle.submit(new SubmitRequest(
                 session, "Duplicate mobile", registeredMobile,
-                "duplicate.mobile." + invitation.candidateId(),
+                "duplicate.mobile." + candidateId,
                 "Directory-Test-Password-2026", "Directory-Test-Password-2026",
                 FRONT_DEPARTMENT, FRONT_POSITION, version))))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -1687,6 +1819,26 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
                 new NamedParameterJdbcTemplate(DATA_SOURCE), mock(TenantDatabaseContext.class),
                 properties, codec, mock(WeComApiClient.class), new ObjectMapper(),
                 new PilotPasswordHasher(), transactionManager);
+    }
+
+    private UUID startReusableCandidate(
+            OpenInvitationResponse invitation,
+            WeComDirectoryOnboardingService lifecycle
+    ) {
+        inTransaction(() -> lifecycle.start(openInvitationToken(invitation)));
+        return uuidValue("""
+                select id from wecom_person_onboarding
+                where open_invitation_id = ?
+                order by created_at desc, id desc
+                limit 1
+                """, invitation.candidateId());
+    }
+
+    private static String openInvitationToken(OpenInvitationResponse invitation) {
+        String enrollmentUrl = invitation.enrollmentUrl().toString();
+        int tokenStart = enrollmentUrl.lastIndexOf("token=");
+        if (tokenStart < 0) throw new IllegalArgumentException("邀请链接缺少令牌");
+        return enrollmentUrl.substring(tokenStart + "token=".length());
     }
 
     private void makeCandidateApprovable(UUID candidateId, UUID orgUnitId, UUID positionId) {

@@ -9,7 +9,12 @@ export type DirectoryPositionOption = {
   unavailableReason?: string
 }
 export type DirectoryDepartmentOption = { id: string; name: string; positions: DirectoryPositionOption[] }
-export type DirectoryHotelOption = { id: string; name: string; departments: DirectoryDepartmentOption[] }
+export type DirectoryHotelOption = {
+  id: string
+  name: string
+  unitType: 'GROUP' | 'HOTEL'
+  departments: DirectoryDepartmentOption[]
+}
 export type DirectoryOnboardingContext = {
   candidateId: string
   status: DirectoryOnboardingStatus
