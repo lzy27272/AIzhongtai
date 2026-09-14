@@ -76,6 +76,14 @@ PILOT.8使用`X-Assignment-Id`表达当前业务动作任职。首次身份请�
 - 专用列表不返回描述、结果、提醒或证据元数据；详情仅对当前董事长本人权威交办补充最小必要字段，不提供证据内容接口。董事长直调通用任务列表、详情、动作及证据接口统一拒绝。
 - `/api/v1/work-plans`仍尚未实现；高管交办和工作计划对应开关保持默认关闭。
 
+## 全岗位工作模板配置契约
+
+- `PUT /api/v1/work-packages/{workPackageId}/versions/{versionId}`对`DRAFT`版本执行完整替换，可一次提交任意岗位的多工作项清单；`PUBLISHED`版本保持不可变，调整时必须创建新版本。移除只影响新版本，不删除历史工作、证据和日报。
+- 每个工作项可配置`weekdays`、`holidayPolicy`、`applicabilityPolicy.holidayDates/workdayOverrides`及`executionPolicy.enabled`。任务生成会忽略停用项和非适用星期；`SKIP`会跳过指定节假日，调休工作日优先恢复执行。
+- `reminderPolicy.moments`支持执行提醒、进度督办、逾期和升级提醒；`localTime`按工作项的租户/固定时区执行，接收人为执行人或直属领导。
+- `submissionPolicy`支持完成/异常/下一步说明、结构化证据点、相机或文件来源、按房号等实例留证、0—200个附件和单文件20MiB上限。
+- `reportPolicy.dailyReport/factLabel/includeEvidence/includeExceptions`控制审核通过的日常工作是否自动投影到日报、显示名称及是否复制证据和异常信息；员工手工填写的其他工作不被覆盖。
+
 主数据维护继续使用API-V1向后兼容边界。`PUT`负责资料和`ACTIVE/INACTIVE`生命周期；`DELETE`只接受已停用且没有业务引用的数据。已存在任职、授权、工作或任务历史时返回400并要求保留停用记录，禁止级联删除历史。所有写操作要求`org.manage`，并继续执行租户和组织范围检查。
 
 ## Sprint 2.1 UAT 关键契约

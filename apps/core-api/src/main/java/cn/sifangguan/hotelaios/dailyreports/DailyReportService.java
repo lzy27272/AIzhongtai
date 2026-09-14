@@ -715,7 +715,8 @@ public class DailyReportService {
                 select item_result.id, item_result.revision_id as "revisionId",
                        revision.revision_no as "revisionNo",
                        item_result.template_item_id as "templateItemId",
-                       template_item.item_code as "itemCode", template_item.label,
+                       template_item.item_code as "itemCode",
+                       coalesce(nullif(package_item.report_policy ->> 'factLabel', ''), template_item.label) as label,
                        item_result.result_status as "resultStatus", item_result.value::text as value,
                        item_result.system_prefilled as "systemPrefilled",
                        item_result.employee_confirmed as "employeeConfirmed",
@@ -729,6 +730,9 @@ public class DailyReportService {
                 join daily_report_template_item template_item
                   on template_item.tenant_id = item_result.tenant_id
                  and template_item.id = item_result.template_item_id
+                left join work_package_item package_item
+                  on package_item.tenant_id = template_item.tenant_id
+                 and package_item.id = template_item.work_package_item_id
                 where revision.tenant_id = :tenantId and revision.report_id = :reportId
                 order by revision.revision_no desc, template_item.sort_order, template_item.item_code
                 """, base(principal).addValue("reportId", reportId)).stream()

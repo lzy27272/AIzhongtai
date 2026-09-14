@@ -360,6 +360,7 @@ paths:
       tags: [Work Package]
       operationId: updateWorkPackageVersion
       summary: Replace draft version scopes and items
+      description: Replaces the complete multi-item configuration for a draft version. Published versions are immutable.
       parameters:
         - $ref: '#/components/parameters/WorkPackageId'
         - $ref: '#/components/parameters/VersionId'
@@ -1827,6 +1828,10 @@ components:
           minItems: 1
           items: { $ref: '#/components/schemas/WorkPackageResponsibility' }
         submissionPolicy: { $ref: '#/components/schemas/WorkSubmissionPolicy' }
+        reminderPolicy: { type: object, additionalProperties: true, description: Configured local-time reminder moments and recipients }
+        reportPolicy: { type: object, additionalProperties: true, description: Daily-report projection, label, evidence and exception controls }
+        applicabilityPolicy: { type: object, additionalProperties: true, description: Holiday dates, workday overrides and other applicability facts }
+        executionPolicy: { type: object, additionalProperties: true, description: Runtime enablement and execution controls }
     WorkSubmissionPolicy:
       type: object
       properties:
@@ -1834,11 +1839,13 @@ components:
         exceptionStatementRequired: { type: boolean, default: false }
         nextActionRequired: { type: boolean, default: false }
         attachmentRequired: { type: boolean, default: false }
-        maxAttachments: { type: integer, minimum: 0, maximum: 10, default: 10 }
+        attachmentCountUnlimited: { type: boolean, default: false, description: Business-unlimited mode still uses the 200-file safety ceiling }
+        maxAttachments: { type: integer, minimum: 0, maximum: 200, default: 10 }
         maxFileSizeBytes: { type: integer, minimum: 1, maximum: 20971520, default: 20971520 }
         allowedExtensions:
           type: array
           items: { type: string, enum: [jpg, jpeg, png, pdf, docx, xlsx] }
+        evidenceRequirements: { type: array, items: { type: object, additionalProperties: true } }
     UpdateWorkPackageVersion:
       type: object
       required: [title, scopes, items]

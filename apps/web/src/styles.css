@@ -594,6 +594,53 @@ dd { margin: 5px 0 0; color: #334f64; font-size: 10px; }
 .version-summary > div { min-height: 48px; padding: 10px 12px; display: grid; grid-template-columns: 60px 100px 1fr; gap: 12px; align-items: center; border: 1px solid #e0e8ed; border-radius: 9px; }
 .allocation-box { margin-top: 16px; padding: 14px; border: 1px solid #d9e7ee; border-radius: 10px; background: #f7fafb; }
 .allocation-box h3 { margin: 0 0 10px; color: #31566c; font-size: 12px; }.allocation-box > small { display: block; margin-top: 8px; color: #81929c; font-size: 8px; }
+.work-package-editor-modal { width: min(1240px,calc(100vw - 32px)); max-height: 94vh; }
+.work-template-configuration { padding: 0; overflow: hidden; background: #f4f8fa; }
+.work-template-configuration > header { padding: 16px 18px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #d9e7ee; background: #fff; }
+.work-template-configuration > header h3 { margin-bottom: 4px; font-size: 14px; }
+.work-template-configuration > header p { margin: 0; color: #748995; font-size: 9px; }
+.version-metadata-grid { padding: 14px 18px 0; }
+.work-package-editor { min-height: 560px; padding: 14px 18px 18px; display: grid; grid-template-columns: 260px minmax(0,1fr); gap: 14px; }
+.work-item-sidebar { min-width: 0; align-self: start; display: grid; gap: 10px; }
+.work-item-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #31566c; font-size: 10px; }
+.work-item-toolbar span { color: #718794; font-size: 8px; }
+.work-item-list { max-height: 510px; overflow: auto; display: grid; gap: 7px; padding-right: 3px; }
+.work-item-card { width: 100%; min-height: 62px; padding: 10px; display: grid; grid-template-columns: 14px minmax(0,1fr) auto; gap: 7px; align-items: center; border: 1px solid #d8e4eb; border-radius: 10px; color: #31566c; background: #fff; text-align: left; cursor: grab; }
+.work-item-card:hover { border-color: #9cc8e4; }
+.work-item-card.active { border-color: #2b86d1; box-shadow: 0 0 0 3px rgba(43,134,209,.09); }
+.work-item-card.disabled { opacity: .62; background: #f1f3f4; }
+.work-item-card i { color: #91a3ad; font-style: normal; }
+.work-item-card span { min-width: 0; display: grid; gap: 4px; }
+.work-item-card b { overflow: hidden; color: #284c63; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.work-item-card small { color: #8296a2; font-size: 7px; }
+.work-item-card em { padding: 3px 6px; border-radius: 999px; color: #21815e; background: #e8f7f0; font-size: 7px; font-style: normal; }
+.work-item-card.disabled em { color: #6e7d85; background: #e5e9eb; }
+.work-item-add { width: 100%; }
+.work-item-sidebar > p { margin: 0; color: #8798a2; font-size: 8px; line-height: 1.6; }
+.work-item-detail { min-width: 0; display: grid; align-content: start; gap: 12px; }
+.work-item-detail-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.work-item-detail-header h3 { margin: 3px 0 0; color: #21465d; font-size: 15px; }
+.work-item-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.work-rule-section { padding: 14px; display: grid; gap: 12px; border: 1px solid #dce7ed; border-radius: 12px; background: #fff; }
+.work-rule-section > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.work-rule-section h4 { margin: 0; color: #29536c; font-size: 11px; }
+.work-rule-section header span,.work-rule-section header div > span { color: #82949f; font-size: 8px; }
+.switch-line { display: flex!important; grid-auto-flow: column; align-items: center; gap: 7px!important; color: #277758!important; }
+.switch-line input { width: auto!important; min-height: auto!important; }
+.configuration-form .work-rule-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
+.weekday-field { margin: 0; padding: 10px 12px; display: flex; flex-wrap: wrap; gap: 10px 16px; border: 1px solid #dbe5eb; border-radius: 9px; }
+.weekday-field legend { padding: 0 5px; color: #526c7c; font-size: 9px; font-weight: 700; }
+.weekday-field label { display: flex; grid-auto-flow: column; align-items: center; gap: 5px; }
+.weekday-field input { width: auto!important; min-height: auto!important; }
+.rule-row-list,.evidence-card-list { display: grid; gap: 8px; }
+.rule-row { padding: 10px; display: grid; gap: 8px; align-items: end; border: 1px solid #e1e9ee; border-radius: 9px; background: #f8fafb; }
+.reminder-row { grid-template-columns: .8fr 1.1fr .8fr 1fr auto; }
+.evidence-rule-card { padding: 12px; display: grid; gap: 10px; border: 1px solid #dbe7ed; border-radius: 10px; background: #f8fbfc; }
+.evidence-rule-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.evidence-rule-card > header strong { color: #2a5269; font-size: 10px; }
+.empty-rule { margin: 0; padding: 12px; border: 1px dashed #cad8df; border-radius: 9px; color: #8396a1; background: #f8fafb; text-align: center; font-size: 9px; }
+.work-editor-issues { padding: 10px 12px; display: grid; gap: 4px; border: 1px solid #f0c7c4; border-radius: 10px; color: #a34640; background: #fff4f3; font-size: 8px; }
+.work-editor-issues strong { font-size: 9px; }
 .form-context { margin-bottom: 12px; padding: 11px 12px; display: grid; gap: 4px; border-radius: 9px; color: #2c536b; background: #eef6fb; }
 .form-context small { color: #78909f; font-size: 8px; }
 .dynamic-form { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
@@ -642,6 +689,12 @@ dd { margin: 5px 0 0; color: #334f64; font-size: 10px; }
   .login-auth-card header h2 { font-size: 25px; }
   .login-auth-icp { margin-top: auto; padding-top: 28px; }
   .configuration-form .form-grid { grid-template-columns: 1fr; }.configuration-form .full-field { grid-column: auto; }
+  .work-package-editor-modal { width: calc(100vw - 18px); max-height: 96vh; }
+  .work-template-configuration > header,.work-item-detail-header { align-items: stretch; flex-direction: column; }
+  .work-package-editor { min-height: auto; grid-template-columns: 1fr; }
+  .work-item-list { max-height: 230px; }
+  .configuration-form .work-rule-grid,.reminder-row { grid-template-columns: 1fr; }
+  .work-item-actions { justify-content: flex-start; }
   .employee-view-toolbar { align-items: stretch; flex-direction: column; }
   .employee-view-tabs { align-self: flex-start; }
   .danger-action { align-self: flex-start; }

@@ -75,7 +75,7 @@ public class DailyReportRoutineProjectionService {
                        record.position_assignment_id, record.submitted_by_account_id,
                        record.attempt_no, record.payload::text, record.completion_statement,
                        record.exception_statement, record.next_action, record.content_hash,
-                       record.occurred_at, record.reviewed_at
+                       record.occurred_at, record.reviewed_at, package_item.report_policy::text
                 from daily_report report
                 join daily_report_revision revision
                   on revision.tenant_id = report.tenant_id
@@ -88,6 +88,9 @@ public class DailyReportRoutineProjectionService {
                   on item.tenant_id = relation.tenant_id
                  and item.section_version_id = relation.section_version_id
                  and item.work_package_item_id is not null
+                join work_package_item package_item
+                  on package_item.tenant_id = item.tenant_id
+                 and package_item.id = item.work_package_item_id
                 join work_record record
                   on record.tenant_id = report.tenant_id
                  and record.business_date = report.business_date
@@ -99,6 +102,7 @@ public class DailyReportRoutineProjectionService {
                  and expectation.position_assignment_id = report.position_assignment_id
                 where report.tenant_id = :tenantId and report.id = :reportId
                   and report.report_status = 'DRAFT'
+                  and coalesce((package_item.report_policy ->> 'dailyReport')::boolean, true)
                 order by item.id, record.attempt_no desc, record.reviewed_at desc, record.id
                 """, base(principal).addValue("reportId", reportId).addValue("revisionId", revisionId),
                 (rs, rowNum) -> new ProjectableRecord(
@@ -110,7 +114,8 @@ public class DailyReportRoutineProjectionService {
                         rs.getString("completion_statement"), rs.getString("exception_statement"),
                         rs.getString("next_action"), rs.getString("content_hash"),
                         rs.getObject("occurred_at", java.time.OffsetDateTime.class),
-                        rs.getObject("reviewed_at", java.time.OffsetDateTime.class)));
+                        rs.getObject("reviewed_at", java.time.OffsetDateTime.class),
+                        rs.getString("report_policy")));
         for (ProjectableRecord record : records) {
             projectRecord(principal, revisionId, record);
         }
@@ -118,17 +123,22 @@ public class DailyReportRoutineProjectionService {
     }
 
     private void projectRecord(TenantPrincipal principal, UUID revisionId, ProjectableRecord record) {
+        ObjectNode reportPolicy = readObject(record.reportPolicy());
+        boolean includeEvidence = reportPolicy.path("includeEvidence").asBoolean(true);
+        boolean includeExceptions = reportPolicy.path("includeExceptions").asBoolean(true);
         ObjectNode value = objectMapper.createObjectNode();
         value.put("workRecordId", record.workRecordId().toString());
         value.put("status", "APPROVED");
         value.put("completion", blankToFallback(record.completionStatement(), "已完成"));
-        if (!isBlank(record.exceptionStatement())) value.put("exception", record.exceptionStatement());
+        String factLabel = reportPolicy.path("factLabel").asText("").trim();
+        if (!factLabel.isBlank()) value.put("factLabel", factLabel);
+        if (includeExceptions && !isBlank(record.exceptionStatement())) value.put("exception", record.exceptionStatement());
         if (!isBlank(record.nextAction())) value.put("nextAction", record.nextAction());
         value.set("formData", readObject(record.payload()));
         value.put("reviewedAt", record.reviewedAt().toString());
-        boolean exception = !isBlank(record.exceptionStatement())
+        boolean exception = includeExceptions && !isBlank(record.exceptionStatement())
                 && !"无".equals(record.exceptionStatement().trim());
-        int evidenceCount = countAttachments(principal, record.workRecordId());
+        int evidenceCount = includeEvidence ? countAttachments(principal, record.workRecordId()) : 0;
         ObjectNode summary = objectMapper.createObjectNode();
         summary.put("sourceType", "WORK_RECORD");
         summary.put("workRecordId", record.workRecordId().toString());
@@ -181,39 +191,41 @@ public class DailyReportRoutineProjectionService {
                 .addValue("sourceSnapshot", source.toString()).addValue("contentHash", record.contentHash())
                 .addValue("occurredAt", record.occurredAt()).addValue("actorId", principal.actorId()));
 
-        jdbc.update("""
-                insert into daily_report_evidence
-                    (id, tenant_id, revision_id, item_result_id, evidence_type, object_key,
-                     original_name, media_type, size_bytes, sha256, structured_snapshot,
-                     scan_status, sensitivity_level, uploaded_by_account_id,
-                     uploaded_by_assignment_id)
-                select gen_random_uuid(), attachment.tenant_id, :revisionId, :itemResultId,
-                       case when attachment.media_type like 'image/%' then 'IMAGE' else 'DOCUMENT' end,
-                       attachment.object_key, attachment.original_name, attachment.media_type,
-                       attachment.size_bytes, attachment.sha256,
-                       jsonb_build_object(
-                           'attachmentId', attachment.id::text,
-                           'captureSource', attachment.capture_source,
-                           'checkpointCode', attachment.checkpoint_code,
-                           'evidenceInstanceKey', attachment.evidence_metadata ->> 'evidenceInstanceKey',
-                           'receivedAt', attachment.received_at,
-                           'sourceSha256', attachment.source_sha256
-                       ), attachment.scan_status, 'INTERNAL',
-                       coalesce(:submittedByAccountId, :actorId), :assignmentId
-                from attachment
-                where attachment.tenant_id = :tenantId
-                  and attachment.work_record_id = :recordId
-                  and attachment.scan_status <> 'REJECTED'
-                  and not exists (
-                      select 1 from daily_report_evidence existing
-                      where existing.tenant_id = attachment.tenant_id
-                        and existing.revision_id = :revisionId
-                        and existing.object_key = attachment.object_key
-                  )
-                """, base(principal).addValue("revisionId", revisionId).addValue("itemResultId", resultId)
-                .addValue("recordId", record.workRecordId())
-                .addValue("submittedByAccountId", record.submittedByAccountId())
-                .addValue("actorId", principal.actorId()).addValue("assignmentId", record.assignmentId()));
+        if (includeEvidence) {
+            jdbc.update("""
+                    insert into daily_report_evidence
+                        (id, tenant_id, revision_id, item_result_id, evidence_type, object_key,
+                         original_name, media_type, size_bytes, sha256, structured_snapshot,
+                         scan_status, sensitivity_level, uploaded_by_account_id,
+                         uploaded_by_assignment_id)
+                    select gen_random_uuid(), attachment.tenant_id, :revisionId, :itemResultId,
+                           case when attachment.media_type like 'image/%' then 'IMAGE' else 'DOCUMENT' end,
+                           attachment.object_key, attachment.original_name, attachment.media_type,
+                           attachment.size_bytes, attachment.sha256,
+                           jsonb_build_object(
+                               'attachmentId', attachment.id::text,
+                               'captureSource', attachment.capture_source,
+                               'checkpointCode', attachment.checkpoint_code,
+                               'evidenceInstanceKey', attachment.evidence_metadata ->> 'evidenceInstanceKey',
+                               'receivedAt', attachment.received_at,
+                               'sourceSha256', attachment.source_sha256
+                           ), attachment.scan_status, 'INTERNAL',
+                           coalesce(:submittedByAccountId, :actorId), :assignmentId
+                    from attachment
+                    where attachment.tenant_id = :tenantId
+                      and attachment.work_record_id = :recordId
+                      and attachment.scan_status <> 'REJECTED'
+                      and not exists (
+                          select 1 from daily_report_evidence existing
+                          where existing.tenant_id = attachment.tenant_id
+                            and existing.revision_id = :revisionId
+                            and existing.object_key = attachment.object_key
+                      )
+                    """, base(principal).addValue("revisionId", revisionId).addValue("itemResultId", resultId)
+                    .addValue("recordId", record.workRecordId())
+                    .addValue("submittedByAccountId", record.submittedByAccountId())
+                    .addValue("actorId", principal.actorId()).addValue("assignmentId", record.assignmentId()));
+        }
     }
 
     private void refreshRuleAnalysis(TenantPrincipal principal, UUID reportId, UUID revisionId) {
@@ -428,7 +440,8 @@ public class DailyReportRoutineProjectionService {
             String nextAction,
             String contentHash,
             java.time.OffsetDateTime occurredAt,
-            java.time.OffsetDateTime reviewedAt
+            java.time.OffsetDateTime reviewedAt,
+            String reportPolicy
     ) {
     }
 }

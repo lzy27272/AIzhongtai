@@ -6,6 +6,7 @@ import cn.sifangguan.hotelaios.shared.db.TenantDatabaseContext;
 import cn.sifangguan.hotelaios.shared.security.AccessDeniedException;
 import cn.sifangguan.hotelaios.shared.security.AccessPolicy;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
@@ -27,17 +28,20 @@ public class WorkPackageService {
     private final TenantDatabaseContext databaseContext;
     private final AccessPolicy accessPolicy;
     private final AuditWriter auditWriter;
+    private final ObjectMapper objectMapper;
 
     public WorkPackageService(
             NamedParameterJdbcTemplate jdbc,
             TenantDatabaseContext databaseContext,
             AccessPolicy accessPolicy,
-            AuditWriter auditWriter
+            AuditWriter auditWriter,
+            ObjectMapper objectMapper
     ) {
         this.jdbc = jdbc;
         this.databaseContext = databaseContext;
         this.accessPolicy = accessPolicy;
         this.auditWriter = auditWriter;
+        this.objectMapper = objectMapper;
     }
 
     @Transactional(readOnly = true)
@@ -185,10 +189,28 @@ public class WorkPackageService {
         accessPolicy.requirePermission("work-package.manage");
         requireDraftVersion(principal, workPackageId, versionId);
 
+        MapSqlParameterSource versionParams = base(principal).addValue("versionId", versionId);
         jdbc.update("delete from work_package_scope where tenant_id = :tenantId and work_package_version_id = :versionId",
-                base(principal).addValue("versionId", versionId));
+                versionParams);
+        // Delete guarded relation rows while their draft parent item is still visible.
+        // PostgreSQL executes ON DELETE CASCADE after the parent deletion has begun;
+        // the child immutability trigger can no longer resolve the parent version then.
+        jdbc.update("""
+                delete from work_package_item_standard
+                where tenant_id = :tenantId and work_package_item_id in (
+                    select id from work_package_item
+                    where tenant_id = :tenantId and work_package_version_id = :versionId
+                )
+                """, versionParams);
+        jdbc.update("""
+                delete from work_package_item_responsibility
+                where tenant_id = :tenantId and work_package_item_id in (
+                    select id from work_package_item
+                    where tenant_id = :tenantId and work_package_version_id = :versionId
+                )
+                """, versionParams);
         jdbc.update("delete from work_package_item where tenant_id = :tenantId and work_package_version_id = :versionId",
-                base(principal).addValue("versionId", versionId));
+                versionParams);
         jdbc.update("""
                 update work_package_version set title = :title, description = :description
                 where tenant_id = :tenantId and id = :versionId and work_package_definition_id = :workPackageId
@@ -544,6 +566,7 @@ public class WorkPackageService {
                   and v.effective_from::date <= :businessDate
                   and (v.effective_to is null or v.effective_to::date >= :businessDate)
                   and i.period_type = 'DAY'
+                  and coalesce((i.execution_policy ->> 'enabled')::boolean, true)
                   and (cardinality(i.weekdays) = 0
                        or extract(isodow from cast(:businessDate as date))::smallint = any(i.weekdays))
                   and assignment.status = 'ACTIVE'
@@ -1024,6 +1047,14 @@ public class WorkPackageService {
                   and v.effective_from::date <= :businessDate
                   and (v.effective_to is null or v.effective_to::date >= :businessDate)
                   and i.period_type = :periodType
+                  and coalesce((i.execution_policy ->> 'enabled')::boolean, true)
+                  and (cardinality(i.weekdays) = 0
+                       or extract(isodow from cast(:businessDate as date))::smallint = any(i.weekdays))
+                  and (
+                    i.holiday_policy <> 'SKIP'
+                    or jsonb_exists(coalesce(i.applicability_policy -> 'workdayOverrides', '[]'::jsonb), cast(:businessDate as text))
+                    or not jsonb_exists(coalesce(i.applicability_policy -> 'holidayDates', '[]'::jsonb), cast(:businessDate as text))
+                  )
                   and (
                     not coalesce((i.applicability_policy ->> 'requiresBreakfastService')::boolean, false)
                     or coalesce(h.breakfast_service_enabled, false)
@@ -1340,6 +1371,11 @@ public class WorkPackageService {
                 """, params);
         for (Map<String, Object> item : items) {
             normalizeSqlArray(item, "weekdays");
+            normalizeJsonObject(item, "submission_policy");
+            normalizeJsonObject(item, "reminder_policy");
+            normalizeJsonObject(item, "report_policy");
+            normalizeJsonObject(item, "applicability_policy");
+            normalizeJsonObject(item, "execution_policy");
             UUID itemId = (UUID) item.get("id");
             item.put("standards", jdbc.queryForList("""
                     select standard_version_id, usage_type, weight
@@ -1356,6 +1392,35 @@ public class WorkPackageService {
         }
         configuration.put("items", items);
         return configuration;
+    }
+
+    private void normalizeJsonObject(Map<String, Object> row, String column) {
+        Object raw = row.get(column);
+        if (raw == null || raw instanceof JsonNode) {
+            return;
+        }
+        try {
+            JsonNode normalized = objectMapper.readTree(raw.toString());
+            // Older API responses exposed the PostgreSQL driver's {type,value,null}
+            // wrapper. A browser save could persist that wrapper back into JSONB.
+            // Unwrap it defensively and retain any newer fields written beside it.
+            while (normalized.isObject()
+                    && "jsonb".equals(normalized.path("type").asText())
+                    && normalized.path("value").isTextual()) {
+                JsonNode inner = objectMapper.readTree(normalized.path("value").asText());
+                ObjectNode overlay = ((ObjectNode) normalized).deepCopy();
+                overlay.remove(List.of("type", "value", "null"));
+                if (inner.isObject()) {
+                    ((ObjectNode) inner).setAll(overlay);
+                    normalized = inner;
+                } else {
+                    normalized = overlay;
+                }
+            }
+            row.put(column, normalized);
+        } catch (Exception exception) {
+            throw new IllegalStateException("无法读取工作包JSON字段: " + column, exception);
+        }
     }
 
     private static void normalizeSqlArray(Map<String, Object> row, String column) {

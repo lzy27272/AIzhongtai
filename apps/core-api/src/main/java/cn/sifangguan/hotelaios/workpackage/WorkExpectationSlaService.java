@@ -181,6 +181,7 @@ public class WorkExpectationSlaService {
         List<ReminderSource> sources = jdbc.query("""
                 select x.id, x.status, x.business_date, x.available_at, x.due_at, x.position_assignment_id,
                        x.target_org_unit_id, i.name as item_name, i.reminder_policy::text,
+                       i.timezone_mode, i.fixed_timezone, tenant.timezone as tenant_timezone,
                        org.name as org_name, employee.account_id as executor_account_id,
                        manager.id as manager_assignment_id,
                        manager_employee.account_id as manager_account_id
@@ -193,6 +194,7 @@ public class WorkExpectationSlaService {
                   on employee.tenant_id = assignment.tenant_id and employee.id = assignment.employee_id
                 join org_unit org
                   on org.tenant_id = x.tenant_id and org.id = x.target_org_unit_id
+                join tenant on tenant.id = x.tenant_id
                 left join employee_position_assignment manager
                   on manager.tenant_id = assignment.tenant_id
                  and manager.id = assignment.manager_assignment_id
@@ -216,7 +218,8 @@ public class WorkExpectationSlaService {
                         rs.getObject("position_assignment_id", UUID.class),
                         rs.getObject("target_org_unit_id", UUID.class),
                         rs.getString("item_name"), rs.getString("org_name"),
-                        rs.getString("reminder_policy"),
+                        rs.getString("reminder_policy"), rs.getString("timezone_mode"),
+                        rs.getString("fixed_timezone"), rs.getString("tenant_timezone"),
                         rs.getObject("executor_account_id", UUID.class),
                         rs.getObject("manager_assignment_id", UUID.class),
                         rs.getObject("manager_account_id", UUID.class)));
@@ -258,8 +261,8 @@ public class WorkExpectationSlaService {
             if (!code.matches("[A-Z][A-Z0-9_]{0,23}") || localTime.isBlank()) {
                 throw new IllegalArgumentException("提醒时点编码或时间无效");
             }
-            OffsetDateTime scheduledAt = OffsetDateTime.of(
-                    source.businessDate(), LocalTime.parse(localTime), source.dueAt().getOffset());
+            OffsetDateTime scheduledAt = source.businessDate().atTime(LocalTime.parse(localTime))
+                    .atZone(reminderZone(source)).toOffsetDateTime();
             List<ReminderRecipient> recipients = "DIRECT_MANAGER".equals(recipient)
                     ? source.managerAccountId() == null ? List.of()
                     : List.of(new ReminderRecipient(source.managerAccountId(), source.managerAssignmentId()))
@@ -334,6 +337,12 @@ public class WorkExpectationSlaService {
         moments.add(new ReminderMoment(stage, stage,
                 before ? anchor.minusMinutes(minutes) : anchor.plusMinutes(minutes),
                 accountId, assignmentId));
+    }
+
+    private static ZoneId reminderZone(ReminderSource source) {
+        String zoneName = "FIXED".equals(source.timezoneMode())
+                ? source.fixedTimezone() : source.tenantTimezone();
+        return ZoneId.of(zoneName);
     }
 
     private boolean stageApplies(ReminderSource source, String stage, OffsetDateTime processingTime) {
@@ -468,6 +477,9 @@ public class WorkExpectationSlaService {
             String itemName,
             String orgName,
             String reminderPolicy,
+            String timezoneMode,
+            String fixedTimezone,
+            String tenantTimezone,
             UUID executorAccountId,
             UUID managerAssignmentId,
             UUID managerAccountId

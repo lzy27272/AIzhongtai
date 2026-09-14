@@ -255,6 +255,198 @@ class WorkPackageFlowIntegrationTest {
                 """, Integer.class, managementEventId, ruleId)).isEqualTo(1);
     }
 
+    @Test
+    void configuredItemEnablementWeekdayAndHolidayRulesControlGeneration() throws Exception {
+        LocalDate businessDate = LocalDate.now().plusYears(2);
+        int otherWeekday = businessDate.getDayOfWeek().getValue() % 7 + 1;
+        OffsetDateTime effectiveFrom = OffsetDateTime.now().minusMinutes(1).withNano(0);
+        JsonNode definition = response(identity(post("/api/v1/work-packages"), CEO)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {
+                          "code":"WP-ALL-POSITION-CONFIG-TEST",
+                          "name":"All position configuration test",
+                          "positionId":"%s",
+                          "ownerOrgUnitId":"%s"
+                        }
+                        """.formatted(FRONT_POSITION, HANGZHOU_HOTEL)), 201);
+        String workPackageId = definition.path("id").asText();
+        JsonNode version = response(identity(post("/api/v1/work-packages/{id}/versions", workPackageId), CEO)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"title\":\"All position configuration test V1\"}"), 201);
+        String versionId = version.path("id").asText();
+
+        mockMvc.perform(identity(put("/api/v1/work-packages/{id}/versions/{versionId}", workPackageId, versionId), CEO)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "title":"All position configuration test V1",
+                                  "scopes":[{"scopeType":"ORG_TREE","orgUnitId":"%s"}],
+                                  "items":[
+                                    {
+                                      "itemCode":"CONFIG_ACTIVE_TEST","name":"Active configured work",
+                                       "itemType":"INSPECTION","formVersionId":"%s","periodType":"DAY",
+                                       "timezoneMode":"TENANT","dueLocalTime":"18:00:00","reviewMode":"NONE",
+                                       "weekdays":[%d],
+                                       "executionPolicy":{"enabled":true},
+                                      "reminderPolicy":{"moments":[{"code":"R0900","kind":"REMINDER","localTime":"09:00","recipient":"EXECUTORS"}]},
+                                      "submissionPolicy":{"attachmentRequired":true,"maxAttachments":20,"allowedExtensions":["jpg","pdf"]},
+                                      "reportPolicy":{"dailyReport":true,"factLabel":"Active configured work","includeEvidence":true},
+                                      "standards":[],"responsibilities":[{"participantType":"EXECUTOR","resolverType":"CURRENT_ASSIGNMENT"}]
+                                    },
+                                    {
+                                      "itemCode":"CONFIG_DISABLED_TEST","name":"Disabled configured work",
+                                      "itemType":"INSPECTION","formVersionId":"%s","periodType":"DAY",
+                                      "timezoneMode":"TENANT","dueLocalTime":"19:00:00","reviewMode":"NONE",
+                                       "executionPolicy":{"enabled":false},
+                                       "standards":[],"responsibilities":[{"participantType":"EXECUTOR","resolverType":"CURRENT_ASSIGNMENT"}]
+                                    },
+                                    {
+                                      "itemCode":"CONFIG_WEEKDAY_TEST","name":"Wrong weekday work",
+                                      "itemType":"INSPECTION","formVersionId":"%s","periodType":"DAY",
+                                      "timezoneMode":"TENANT","dueLocalTime":"19:30:00","reviewMode":"NONE",
+                                      "weekdays":[%d],"executionPolicy":{"enabled":true},
+                                      "standards":[],"responsibilities":[{"participantType":"EXECUTOR","resolverType":"CURRENT_ASSIGNMENT"}]
+                                    },
+                                    {
+                                      "itemCode":"CONFIG_HOLIDAY_TEST","name":"Skipped holiday work",
+                                      "itemType":"INSPECTION","formVersionId":"%s","periodType":"DAY",
+                                      "timezoneMode":"TENANT","dueLocalTime":"20:00:00","reviewMode":"NONE",
+                                      "weekdays":[],"holidayPolicy":"SKIP",
+                                      "applicabilityPolicy":{"holidayDates":["%s"],"workdayOverrides":[]},
+                                      "executionPolicy":{"enabled":true},
+                                      "standards":[],"responsibilities":[{"participantType":"EXECUTOR","resolverType":"CURRENT_ASSIGNMENT"}]
+                                    }
+                                  ]
+                                }
+                                """.formatted(HANGZHOU_HOTEL, FRONT_FORM_VERSION,
+                                businessDate.getDayOfWeek().getValue(), FRONT_FORM_VERSION,
+                                FRONT_FORM_VERSION, otherWeekday, FRONT_FORM_VERSION, businessDate)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.itemCount").value(4));
+
+        mockMvc.perform(identity(post("/api/v1/work-packages/{id}/versions/{versionId}/publish",
+                        workPackageId, versionId), CEO)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"effectiveFrom\":\"" + effectiveFrom + "\"}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(identity(post("/api/v1/work-packages/{id}/allocations", workPackageId), CEO)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "workPackageVersionId":"%s","positionAssignmentId":"%s",
+                                  "targetOrgUnitId":"%s","validFrom":"%s"
+                                }
+                                """.formatted(versionId, FRONT_ASSIGNMENT, FRONT_DEPARTMENT, businessDate.minusDays(1))))
+                .andExpect(status().isCreated());
+        mockMvc.perform(identity(post("/api/v1/work-expectations/actions/generate"), CEO)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "positionAssignmentId":"%s","targetOrgUnitId":"%s",
+                                  "businessDate":"%s","periodType":"DAY","dutyPeriodId":null
+                                }
+                                """.formatted(FRONT_ASSIGNMENT, FRONT_DEPARTMENT, businessDate)))
+                .andExpect(status().isCreated());
+
+        assertThat(jdbc.queryForObject("""
+                select count(*) from work_expectation expectation
+                join work_package_item item on item.tenant_id = expectation.tenant_id
+                                           and item.id = expectation.work_package_item_id
+                where expectation.business_date = ? and item.item_code = 'CONFIG_ACTIVE_TEST'
+                """, Integer.class, businessDate)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                select count(*) from work_expectation expectation
+                join work_package_item item on item.tenant_id = expectation.tenant_id
+                                           and item.id = expectation.work_package_item_id
+                where expectation.business_date = ? and item.item_code = 'CONFIG_DISABLED_TEST'
+                """, Integer.class, businessDate)).isZero();
+        assertThat(jdbc.queryForObject("""
+                select count(*) from work_expectation expectation
+                join work_package_item item on item.tenant_id = expectation.tenant_id
+                                           and item.id = expectation.work_package_item_id
+                where expectation.business_date = ?
+                  and item.item_code in ('CONFIG_WEEKDAY_TEST', 'CONFIG_HOLIDAY_TEST')
+                """, Integer.class, businessDate)).isZero();
+    }
+
+    @Test
+    void draftVersionCanReplaceExistingItemsAndTheirGuardedRelations() throws Exception {
+        JsonNode definition = response(identity(post("/api/v1/work-packages"), CEO)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {
+                          "code":"WP-DRAFT-REPLACE-TEST","name":"Draft replacement test",
+                          "positionId":"%s","ownerOrgUnitId":"%s"
+                        }
+                        """.formatted(FRONT_POSITION, HANGZHOU_HOTEL)), 201);
+        String workPackageId = definition.path("id").asText();
+        JsonNode version = response(identity(post("/api/v1/work-packages/{id}/versions", workPackageId), CEO)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"title\":\"Draft replacement test V1\"}"), 201);
+        String versionId = version.path("id").asText();
+
+        String firstPayload = """
+                {
+                  "title":"Draft replacement test V1",
+                  "scopes":[{"scopeType":"ORG_TREE","orgUnitId":"%s"}],"items":[{
+                    "itemCode":"FIRST_ITEM","name":"First item","itemType":"INSPECTION",
+                    "formVersionId":"%s","periodType":"DAY","timezoneMode":"TENANT",
+                    "dueLocalTime":"18:00:00","reviewMode":"MANUAL",
+                    "standards":[{"standardVersionId":"%s","usageType":"EXECUTION","weight":1}],
+                    "responsibilities":[
+                      {"participantType":"EXECUTOR","resolverType":"CURRENT_ASSIGNMENT"},
+                      {"participantType":"ACCEPTOR","resolverType":"POSITION_IN_SAME_ORG",
+                       "positionId":"%s","scopeStrategy":"TARGET_ORG"}
+                    ]
+                  }]
+                }
+                """.formatted(HANGZHOU_HOTEL, FRONT_FORM_VERSION, FRONT_STANDARD_VERSION, SUPERVISOR_POSITION);
+        mockMvc.perform(identity(put("/api/v1/work-packages/{id}/versions/{versionId}", workPackageId, versionId), CEO)
+                        .contentType(MediaType.APPLICATION_JSON).content(firstPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.itemCount").value(1));
+        mockMvc.perform(identity(get("/api/v1/work-packages/{id}", workPackageId), CEO))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.latestVersion.items[0].submission_policy.maxAttachments").value(10))
+                .andExpect(jsonPath("$.latestVersion.items[0].report_policy").isMap())
+                .andExpect(jsonPath("$.latestVersion.items[0].report_policy.type").doesNotExist());
+
+        String replacementPayload = """
+                {
+                  "title":"Draft replacement test V1 edited",
+                  "scopes":[{"scopeType":"ORG_TREE","orgUnitId":"%s"}],"items":[
+                    {
+                      "itemCode":"FIRST_ITEM_EDITED","name":"First item edited","itemType":"INSPECTION",
+                      "formVersionId":"%s","periodType":"DAY","timezoneMode":"TENANT",
+                      "dueLocalTime":"17:00:00","reviewMode":"NONE","standards":[],
+                      "responsibilities":[{"participantType":"EXECUTOR","resolverType":"CURRENT_ASSIGNMENT"}]
+                    },
+                    {
+                      "itemCode":"SECOND_ITEM","name":"Second item","itemType":"SCHEDULED_RECORD",
+                      "formVersionId":"%s","periodType":"DAY","timezoneMode":"TENANT",
+                      "dueLocalTime":"19:00:00","reviewMode":"NONE","standards":[],
+                      "responsibilities":[{"participantType":"EXECUTOR","resolverType":"CURRENT_ASSIGNMENT"}]
+                    }
+                  ]
+                }
+                """.formatted(HANGZHOU_HOTEL, FRONT_FORM_VERSION, FRONT_FORM_VERSION);
+        mockMvc.perform(identity(put("/api/v1/work-packages/{id}/versions/{versionId}", workPackageId, versionId), CEO)
+                        .contentType(MediaType.APPLICATION_JSON).content(replacementPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.itemCount").value(2));
+
+        assertThat(jdbc.queryForObject("""
+                select count(*) from work_package_item
+                where tenant_id = ?::uuid and work_package_version_id = ?::uuid
+                """, Integer.class, TENANT, versionId)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("""
+                select count(*) from work_package_item item
+                where item.tenant_id = ?::uuid and item.work_package_version_id = ?::uuid
+                  and item.item_code = 'FIRST_ITEM'
+                """, Integer.class, TENANT, versionId)).isZero();
+    }
+
     private String recordBody(LocalDate date, String expectationId, String payload, boolean draft) {
         return """
                 {

@@ -126,7 +126,7 @@ function normalizeItem(
     id: itemResultId || templateItemId || `item:${index}`,
     templateItemId: templateItemId || text(result.templateItemId),
     code: text(template.itemCode || template.code || result.itemCode, `ITEM_${index + 1}`),
-    label: text(template.label || result.label, `日报字段 ${index + 1}`),
+    label: text((systemPrefilled && result.label) || template.label || result.label, `日报字段 ${index + 1}`),
     description: text(template.description || template.helpText) || undefined,
     inputType: inputType(template.valueType || template.inputType),
     required: template.required !== false,

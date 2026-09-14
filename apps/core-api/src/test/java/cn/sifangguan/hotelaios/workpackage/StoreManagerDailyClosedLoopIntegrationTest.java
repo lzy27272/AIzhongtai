@@ -124,6 +124,13 @@ class StoreManagerDailyClosedLoopIntegrationTest {
                   and expectation.id = any(?::uuid[])
                   and (moment ->> 'localTime')::time
                       <= (timezone(tenant.timezone, now()))::time
+                  and (
+                      (coalesce(moment ->> 'kind', 'REMINDER') in ('REMINDER', 'PROGRESS')
+                          and expectation.due_at > now())
+                      or
+                      (coalesce(moment ->> 'kind', 'REMINDER') in ('OVERDUE', 'ESCALATION')
+                          and expectation.due_at <= now())
+                  )
                 """, Integer.class, TENANT, "{" + String.join(",", expectationIds) + "}");
         if (elapsedReminderMoments == 0) {
             assertThat(reminderCount(expectationIds, null)).isZero();
@@ -292,6 +299,10 @@ class StoreManagerDailyClosedLoopIntegrationTest {
                 select count(*) from daily_report_item_result
                 where tenant_id = ?::uuid and revision_id = ? and system_prefilled = true
                 """, Integer.class, TENANT, revisionId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                select value ->> 'factLabel' from daily_report_item_result
+                where tenant_id = ?::uuid and revision_id = ? and system_prefilled = true
+                """, String.class, TENANT, revisionId)).isEqualTo("仪容仪表与晨会");
         assertThat(jdbc.queryForObject("""
                 select count(*) from daily_report_source_reference
                 where tenant_id = ?::uuid and revision_id = ? and source_type = 'WORK_RECORD'
