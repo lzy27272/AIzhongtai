@@ -997,6 +997,9 @@ dd { margin: 5px 0 0; color: #334f64; font-size: 10px; }
 .workbench-summary-row { min-height: 38px; display: grid; grid-template-columns: minmax(130px,1.5fr) repeat(4,minmax(46px,.5fr)); align-items: center; gap: 8px; border-top: 1px solid #edf1f4; color: #536b7b; font-size: 9px; }
 .workbench-summary-row.head { min-height: 30px; color: #91a0aa; border-top: 0; }
 .workbench-summary-row strong { color: #24475e; }
+.workbench-rate-cell { display: grid; gap: 1px; }
+.workbench-rate-cell b { color: #168064; font-size: 11px; }
+.workbench-rate-cell small { color: #91a0aa; font-size: 8px; }
 .workbench-detail-grid { padding: 18px 22px 22px; display: grid; grid-template-columns: minmax(270px,.85fr) minmax(290px,.9fr) minmax(490px,1.6fr); align-items: start; gap: 13px; }
 .workbench-task-board { min-width: 0; overflow: hidden; border: 1px solid #e1e9ee; border-radius: 13px; background: #fff; }
 .workbench-task-board > header { padding: 16px 18px 10px; display: flex; align-items: end; justify-content: space-between; gap: 12px; }

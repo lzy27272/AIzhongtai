@@ -309,8 +309,8 @@ function demoWorkbenchSummary(): WorkbenchSummary {
     today: metric(5, 2, 1, 1, 1),
     monthToDate: metric(36, 29, 2, 2, 3),
     hotels: [
-      { id: '12000000-0000-0000-0000-000000000003', name: '杭州中心店', today: metric(4, 2, 1, 0, 1), monthToDate: metric(24, 20, 1, 1, 2) },
-      { id: '12000000-0000-0000-0000-000000000004', name: '上海滨江店', today: metric(1, 0, 0, 1, 0), monthToDate: metric(12, 9, 1, 1, 1) },
+      { id: '12000000-0000-0000-0000-000000000003', name: '杭州中心店', today: metric(4, 2, 1, 0, 1), monthToDate: metric(24, 20, 1, 1, 2), departments: [] },
+      { id: '12000000-0000-0000-0000-000000000004', name: '上海滨江店', today: metric(1, 0, 0, 1, 0), monthToDate: metric(12, 9, 1, 1, 1), departments: [] },
     ],
   }
 }
@@ -329,6 +329,21 @@ export async function loadWorkbenchSummary(identity: ApiIdentity, date?: string)
         name: text(hotel, ['name'], '授权门店'),
         today: normalizeCompletionMetric(hotel.today),
         monthToDate: normalizeCompletionMetric(value(hotel, 'monthToDate', 'month_to_date')),
+        departments: asList<JsonObject>(hotel.departments).map((department) => ({
+          id: text(department, ['id']),
+          name: text(department, ['name'], '未归属部门'),
+          today: normalizeCompletionMetric(department.today),
+          monthToDate: normalizeCompletionMetric(value(department, 'monthToDate', 'month_to_date')),
+          employees: asList<JsonObject>(department.employees).map((employee) => ({
+            id: text(employee, ['id']),
+            assignmentId: text(employee, ['assignmentId', 'assignment_id']),
+            employeeId: text(employee, ['employeeId', 'employee_id']),
+            name: text(employee, ['name'], '未命名员工'),
+            positionName: text(employee, ['positionName', 'position_name']),
+            today: normalizeCompletionMetric(employee.today),
+            monthToDate: normalizeCompletionMetric(value(employee, 'monthToDate', 'month_to_date')),
+          })),
+        })),
       })),
     } satisfies WorkbenchSummary
   }, async () => demoWorkbenchSummary())

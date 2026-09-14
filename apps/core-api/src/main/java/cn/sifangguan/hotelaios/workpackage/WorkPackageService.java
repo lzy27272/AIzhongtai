@@ -613,8 +613,23 @@ public class WorkPackageService {
                 select x.business_date, x.due_at, x.status,
                        first_record.submitted_at as first_submitted_at,
                        hotel_context.id as hotel_org_unit_id,
-                       hotel_context.name as hotel_name
+                       hotel_context.name as hotel_name,
+                       department_context.id as department_org_unit_id,
+                       department_context.name as department_name,
+                       assignment.id as assignment_id,
+                       employee_row.id as employee_id,
+                       employee_row.name as employee_name,
+                       position.name as position_name
                 from work_expectation x
+                join employee_position_assignment assignment
+                  on assignment.tenant_id = x.tenant_id
+                 and assignment.id = x.position_assignment_id
+                join employee employee_row
+                  on employee_row.tenant_id = assignment.tenant_id
+                 and employee_row.id = assignment.employee_id
+                join position_definition position
+                  on position.tenant_id = assignment.tenant_id
+                 and position.id = assignment.position_id
                 left join lateral (
                     select min(w.submitted_at) as submitted_at
                     from work_record w
@@ -634,6 +649,18 @@ public class WorkPackageService {
                     order by hotel_link.depth
                     limit 1
                 ) hotel_context on true
+                left join lateral (
+                    select department.id, department.name
+                    from org_unit_closure department_link
+                    join org_unit department
+                      on department.tenant_id = department_link.tenant_id
+                     and department.id = department_link.ancestor_id
+                     and department.unit_type = 'DEPARTMENT'
+                    where department_link.tenant_id = assignment.tenant_id
+                      and department_link.descendant_id = assignment.org_unit_id
+                    order by department_link.depth
+                    limit 1
+                ) department_context on true
                 where x.tenant_id = :tenantId
                   and x.business_date between :monthStart and :asOfDate
                   and x.status not in ('WAIVED', 'CANCELLED')
@@ -644,7 +671,13 @@ public class WorkPackageService {
                         rs.getString("status"),
                         rs.getObject("first_submitted_at", OffsetDateTime.class),
                         rs.getObject("hotel_org_unit_id", UUID.class),
-                        rs.getString("hotel_name")));
+                        rs.getString("hotel_name"),
+                        rs.getObject("department_org_unit_id", UUID.class),
+                        rs.getString("department_name"),
+                        rs.getObject("assignment_id", UUID.class),
+                        rs.getObject("employee_id", UUID.class),
+                        rs.getString("employee_name"),
+                        rs.getString("position_name")));
 
         WorkbenchMetric totalToday = new WorkbenchMetric();
         WorkbenchMetric totalMonth = new WorkbenchMetric();
@@ -657,10 +690,7 @@ public class WorkPackageService {
             if (row.hotelOrgUnitId() != null) {
                 HotelWorkbenchMetric hotel = hotelMetrics.computeIfAbsent(row.hotelOrgUnitId(),
                         ignored -> new HotelWorkbenchMetric(row.hotelOrgUnitId(), row.hotelName()));
-                hotel.monthToDate().add(row, cutoff);
-                if (asOfDate.equals(row.businessDate())) {
-                    hotel.today().add(row, cutoff);
-                }
+                hotel.add(row, cutoff, asOfDate.equals(row.businessDate()));
             }
         }
         List<Map<String, Object>> hotels = hotelMetrics.values().stream()
@@ -1880,7 +1910,13 @@ public class WorkPackageService {
             String status,
             OffsetDateTime firstSubmittedAt,
             UUID hotelOrgUnitId,
-            String hotelName
+            String hotelName,
+            UUID departmentOrgUnitId,
+            String departmentName,
+            UUID assignmentId,
+            UUID employeeId,
+            String employeeName,
+            String positionName
     ) {
     }
 
@@ -1932,6 +1968,7 @@ public class WorkPackageService {
         private final String name;
         private final WorkbenchMetric today = new WorkbenchMetric();
         private final WorkbenchMetric monthToDate = new WorkbenchMetric();
+        private final Map<String, DepartmentWorkbenchMetric> departments = new LinkedHashMap<>();
 
         private HotelWorkbenchMetric(UUID id, String name) {
             this.id = id;
@@ -1942,18 +1979,107 @@ public class WorkPackageService {
             return name;
         }
 
-        private WorkbenchMetric today() {
-            return today;
-        }
-
-        private WorkbenchMetric monthToDate() {
-            return monthToDate;
+        private void add(WorkbenchMetricRow row, OffsetDateTime cutoff, boolean isToday) {
+            monthToDate.add(row, cutoff);
+            if (isToday) today.add(row, cutoff);
+            String departmentId = row.departmentOrgUnitId() == null
+                    ? id + ":hotel-management"
+                    : row.departmentOrgUnitId().toString();
+            String departmentName = row.departmentName() == null || row.departmentName().isBlank()
+                    ? "门店管理"
+                    : row.departmentName();
+            DepartmentWorkbenchMetric department = departments.computeIfAbsent(departmentId,
+                    ignored -> new DepartmentWorkbenchMetric(departmentId, departmentName));
+            department.add(row, cutoff, isToday);
         }
 
         private Map<String, Object> toResponse() {
             return response(
                     "id", id,
                     "name", name,
+                    "today", today.toResponse(),
+                    "monthToDate", monthToDate.toResponse(),
+                    "departments", departments.values().stream()
+                            .sorted(Comparator.comparing(DepartmentWorkbenchMetric::name))
+                            .map(DepartmentWorkbenchMetric::toResponse)
+                            .toList());
+        }
+    }
+
+    private static final class DepartmentWorkbenchMetric {
+        private final String id;
+        private final String name;
+        private final WorkbenchMetric today = new WorkbenchMetric();
+        private final WorkbenchMetric monthToDate = new WorkbenchMetric();
+        private final Map<UUID, EmployeeWorkbenchMetric> employees = new LinkedHashMap<>();
+
+        private DepartmentWorkbenchMetric(String id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        private String name() {
+            return name;
+        }
+
+        private void add(WorkbenchMetricRow row, OffsetDateTime cutoff, boolean isToday) {
+            monthToDate.add(row, cutoff);
+            if (isToday) today.add(row, cutoff);
+            EmployeeWorkbenchMetric employee = employees.computeIfAbsent(row.assignmentId(),
+                    ignored -> new EmployeeWorkbenchMetric(
+                            row.assignmentId(), row.employeeId(), row.employeeName(), row.positionName()));
+            employee.add(row, cutoff, isToday);
+        }
+
+        private Map<String, Object> toResponse() {
+            return response(
+                    "id", id,
+                    "name", name,
+                    "today", today.toResponse(),
+                    "monthToDate", monthToDate.toResponse(),
+                    "employees", employees.values().stream()
+                            .sorted(Comparator.comparing(EmployeeWorkbenchMetric::name)
+                                    .thenComparing(EmployeeWorkbenchMetric::positionName))
+                            .map(EmployeeWorkbenchMetric::toResponse)
+                            .toList());
+        }
+    }
+
+    private static final class EmployeeWorkbenchMetric {
+        private final UUID assignmentId;
+        private final UUID employeeId;
+        private final String name;
+        private final String positionName;
+        private final WorkbenchMetric today = new WorkbenchMetric();
+        private final WorkbenchMetric monthToDate = new WorkbenchMetric();
+
+        private EmployeeWorkbenchMetric(UUID assignmentId, UUID employeeId, String name, String positionName) {
+            this.assignmentId = assignmentId;
+            this.employeeId = employeeId;
+            this.name = name;
+            this.positionName = positionName;
+        }
+
+        private String name() {
+            return name == null ? "" : name;
+        }
+
+        private String positionName() {
+            return positionName == null ? "" : positionName;
+        }
+
+        private void add(WorkbenchMetricRow row, OffsetDateTime cutoff, boolean isToday) {
+            monthToDate.add(row, cutoff);
+            if (isToday) today.add(row, cutoff);
+        }
+
+        private Map<String, Object> toResponse() {
+            return response(
+                    "id", assignmentId,
+                    "assignmentId", assignmentId,
+                    "employeeId", employeeId,
+                    "name", name,
+                    "positionName", positionName,
                     "today", today.toResponse(),
                     "monthToDate", monthToDate.toResponse());
         }

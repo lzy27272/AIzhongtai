@@ -4,16 +4,27 @@ import test from 'node:test'
 
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const workbench = readFileSync(new URL('../src/features/workbench/RoleWorkbench.tsx', import.meta.url), 'utf8')
+const taskPages = readFileSync(new URL('../src/Pilot6Pages.tsx', import.meta.url), 'utf8')
 const mobile = readFileSync(new URL('../src/app/rolePresentationPolicy.ts', import.meta.url), 'utf8')
 const workPackageService = readFileSync(new URL('../../core-api/src/main/java/cn/sifangguan/hotelaios/workpackage/WorkPackageService.java', import.meta.url), 'utf8')
 const workDataService = readFileSync(new URL('../../core-api/src/main/java/cn/sifangguan/hotelaios/workdata/WorkDataService.java', import.meta.url), 'utf8')
 const attachmentService = readFileSync(new URL('../../core-api/src/main/java/cn/sifangguan/hotelaios/workdata/AttachmentService.java', import.meta.url), 'utf8')
+const vicePresidentDispatchMigration = readFileSync(new URL('../../../database/migrations/V53__group_vice_president_task_dispatch.sql', import.meta.url), 'utf8')
 
 test('cockpit, task and notification entries are consolidated into the role workbench', () => {
   assert.match(app, /\['hotel-dashboard', 'operations-dashboard', 'tasks', 'notifications'\]\.includes\(item\.id\)/)
   assert.match(app, /item\.id === 'workbench' \? `\$\{activeIdentity\.label\}工作台`/)
-  assert.match(workbench, /工作下达/)
+  assert.match(workbench, /一键下达任务/)
   assert.match(workbench, /消息提醒/)
+})
+
+test('quick dispatch opens the real task dialog in the workbench and keeps target policy authoritative', () => {
+  assert.match(workbench, /<TaskCreateDialog/)
+  assert.match(workbench, /creationSource="WORKBENCH_QUICK_DISPATCH"/)
+  assert.match(workbench, /initialHotelId=\{selectedHotel\?\.id\}/)
+  assert.match(taskPages, /initialHotelId/)
+  assert.match(vicePresidentDispatchMigration, /'task\.create', 'task\.dispatch'/)
+  assert.match(vicePresidentDispatchMigration, /position_function_profile_permission/)
 })
 
 test('rules and work package routes are platform-administrator only', () => {
@@ -28,6 +39,10 @@ test('multi-hotel workbench supports overdue to late-submitted drill-down', () =
   assert.match(workbench, /submitted > due/)
   assert.match(workbench, /TeamWorkDrawer/)
   assert.match(workbench, /部门员工统计/)
+  assert.match(workbench, /本月完成率/)
+  assert.match(workbench, /summaryHotel\.departments/)
+  assert.match(workPackageService, /"departments"/)
+  assert.match(workPackageService, /"employees"/)
 })
 
 test('executive workbench keeps the hotel portfolio and opens the first hotel detail by default', () => {

@@ -25,6 +25,7 @@ import type {
   WorkbenchSummary,
 } from '../../domain'
 import { TeamWorkDrawer } from '../../P0Pages'
+import { TaskCreateDialog } from '../../Pilot6Pages'
 import { useResource } from '../../useResource'
 
 const completedStatuses = new Set(['SUBMITTED', 'SATISFIED', 'COMPLETED', 'APPROVED'])
@@ -156,14 +157,14 @@ function WorkRows({ items, onSelect }: { items: WorkExpectation[]; onSelect: (it
   </div>
 }
 
-type SummaryRow = { name: string; total: number; completed: number; pending: number; overdue: number }
+type SummaryRow = { id: string; name: string; today: WorkCompletionMetric; monthToDate: WorkCompletionMetric }
 
 function SummaryTable({ title, subtitle, rows }: { title: string; subtitle: string; rows: SummaryRow[] }) {
   return <section className="workbench-summary-table">
     <header><div><span className="panel-kicker">SCOPE SUMMARY</span><h3>{title}</h3></div><small>{subtitle}</small></header>
     {!rows.length ? <p className="muted">当前范围暂无可统计记录。</p> : <div>
-      <div className="workbench-summary-row head"><span>范围</span><span>工作</span><span>完成</span><span>待提交</span><span>逾期</span></div>
-      {rows.map((row) => <div className="workbench-summary-row" key={row.name}><strong>{row.name}</strong><span>{row.total}</span><span>{row.completed}</span><span>{row.pending}</span><span className={row.overdue ? 'danger-text' : ''}>{row.overdue}</span></div>)}
+      <div className="workbench-summary-row head"><span>范围</span><span>当日完成率</span><span>本月完成率</span><span>今日待提交</span><span>当前逾期</span></div>
+      {rows.map((row) => <div className="workbench-summary-row" key={row.id}><strong>{row.name}</strong><span className="workbench-rate-cell"><b>{row.today.completionRate}%</b><small>{row.today.onTimeCompleted}/{row.today.expected}</small></span><span className="workbench-rate-cell"><b>{row.monthToDate.completionRate}%</b><small>{row.monthToDate.onTimeCompleted}/{row.monthToDate.expected}</small></span><span>{row.today.pending}</span><span className={row.today.overdue ? 'danger-text' : ''}>{row.today.overdue}</span></div>)}
     </div>}
   </section>
 }
@@ -176,10 +177,13 @@ function aggregate(items: WorkExpectation[], key: (item: WorkExpectation) => str
     if (scoped) scoped.push(item)
     else groups.set(name, [item])
   })
-  return [...groups.entries()].map(([name, scoped]) => {
-    const counts = countByStatus(scoped)
-    return { name, total: scoped.length, completed: counts.COMPLETED, pending: counts.PENDING, overdue: counts.OVERDUE + counts.LATE_SUBMITTED }
-  }).sort((left, right) => right.overdue - left.overdue || right.total - left.total)
+  return [...groups.entries()].map(([name, scoped]) => ({
+    id: name,
+    name,
+    today: completionFromItems(scoped),
+    monthToDate: completionFromItems(scoped, true),
+  })).sort((left, right) => right.today.overdue - left.today.overdue
+    || right.today.expected - left.today.expected)
 }
 
 function RateCard({ label, metric, loading, note }: { label: string; metric: WorkCompletionMetric; loading: boolean; note: string }) {
@@ -228,7 +232,10 @@ export function RoleWorkbench({
   const canReadTeam = allows(permissions, permissionCodes.workRecord.readTeam) || allows(permissions, 'work-record.review')
   const canReadOwn = hasAssignment && (allows(permissions, 'work-record.read') || allows(permissions, 'work-record.submit') || allows(permissions, 'work.submit'))
   const canReadTasks = allows(permissions, 'task.read') || allows(permissions, 'task.act') || allows(permissions, 'task.review') || allows(permissions, permissionCodes.executiveTask.read)
-  const canDispatch = allows(permissions, 'task.create') || allows(permissions, 'task.dispatch') || (executiveTasksEnabled && allows(permissions, permissionCodes.executiveTask.assign))
+  const canManageDispatch = allows(permissions, 'task.create') && allows(permissions, 'task.dispatch')
+  const canExecutiveDispatch = presentationKey === 'GROUP_CHAIRMAN' && executiveTasksEnabled
+    && allows(permissions, permissionCodes.executiveTask.assign)
+  const canDispatch = canManageDispatch || canExecutiveDispatch
   const canReadNotices = allows(permissions, 'notification.read')
   const canReadOperations = allows(permissions, 'dashboard.operations')
   const canReadHotels = allows(permissions, 'dashboard.hotel')
@@ -260,6 +267,7 @@ export function RoleWorkbench({
     return { data: [], source: 'api' as const }
   }, [], 60_000)
   const [selected, setSelected] = useState<WorkExpectation>()
+  const [creatingTask, setCreatingTask] = useState(false)
   const scopedWork = useMemo(() => currentScopeWork(work.data), [work.data])
   const derivedHotels = useMemo(() => {
     const result = new Map<string, HotelRow>()
@@ -296,11 +304,35 @@ export function RoleWorkbench({
   const source: ApiSource = [work.source, completion.source, tasks.source, notices.source, hotelDirectory.source].includes('demo') ? 'demo' : 'api'
   const loading = work.loading || (executive && hotelDirectory.loading)
   const error = work.error
-  const departmentRows = useMemo(() => aggregate(selectedHotelItems, departmentLabel), [selectedHotelItems])
-  const employeeRows = useMemo(() => aggregate(selectedHotelItems, (item) => `${item.assigneeName}${item.positionName ? ` · ${item.positionName}` : ''}`), [selectedHotelItems])
+  const selectedHotelAllItems = useMemo(() => selectedHotel
+    ? work.data.filter((item) => hotelIdFor(item) === selectedHotel.id)
+    : work.data, [selectedHotel, work.data])
   const personalWork = useMemo(() => scopedWork.filter((item) => item.businessDate === businessDate()
     && (!identity.businessActorAssignmentId || item.assignmentId === identity.businessActorAssignmentId)), [identity.businessActorAssignmentId, scopedWork])
   const summaryHotel = selectedHotel ? completion.data.hotels.find((hotel) => hotel.id === selectedHotel.id) : undefined
+  const departmentRows = useMemo<SummaryRow[]>(() => {
+    if (summaryHotel?.departments.length) return summaryHotel.departments
+    if (selectedHotel) return aggregate(selectedHotelAllItems, departmentLabel)
+    const rows = completion.data.hotels.flatMap((hotel) => hotel.departments.map((department) => ({
+      ...department,
+      id: `${hotel.id}:${department.id}`,
+      name: `${hotel.name} · ${department.name}`,
+    })))
+    return rows.length ? rows : aggregate(work.data, departmentLabel)
+  }, [completion.data.hotels, selectedHotel, selectedHotelAllItems, summaryHotel])
+  const employeeRows = useMemo<SummaryRow[]>(() => {
+    if (summaryHotel?.departments.length) return summaryHotel.departments.flatMap((department) => department.employees.map((employee) => ({
+      ...employee,
+      name: `${employee.name}${employee.positionName ? ` · ${employee.positionName}` : ''}`,
+    })))
+    if (selectedHotel) return aggregate(selectedHotelAllItems, (item) => `${item.assigneeName}${item.positionName ? ` · ${item.positionName}` : ''}`)
+    const rows = completion.data.hotels.flatMap((hotel) => hotel.departments.flatMap((department) => department.employees.map((employee) => ({
+      ...employee,
+      id: `${hotel.id}:${employee.id}`,
+      name: `${hotel.name} · ${department.name} · ${employee.name}${employee.positionName ? ` · ${employee.positionName}` : ''}`,
+    }))))
+    return rows.length ? rows : aggregate(work.data, (item) => `${item.assigneeName}${item.positionName ? ` · ${item.positionName}` : ''}`)
+  }, [completion.data.hotels, selectedHotel, selectedHotelAllItems, summaryHotel])
   const todayMetric = canReadTeam
     ? executive ? completion.data.today : summaryHotel?.today ?? completion.data.today
     : completionFromItems(work.data)
@@ -315,13 +347,15 @@ export function RoleWorkbench({
   }, [routeParams.expectationId, scopedWork])
 
   const openHotelStatus = (hotelId: string, status: WorkbenchStatus = 'ALL') => go('workbench', { hotelId, status })
-  const openTaskCreate = () => go('tasks', { view: hasAssignment ? 'mine' : 'team', create: 'true' })
+  const openTaskCreate = () => canExecutiveDispatch
+    ? go('tasks', { create: 'true' })
+    : setCreatingTask(true)
 
   return <section className="role-workbench">
     <section className="role-workbench-hero">
       <div><span className="eyebrow">当前岗位工作</span><h1>{identity.label}工作台</h1><p>{identity.focus}</p></div>
       <div className="role-workbench-actions">
-        {canDispatch && <button type="button" className="primary" onClick={openTaskCreate}>➤ 工作下达</button>}
+        {canDispatch && <button type="button" className="primary" onClick={openTaskCreate}>＋ 一键下达任务</button>}
         {canReadNotices && <button type="button" className="secondary" onClick={() => go('notifications')}>♧ 消息提醒{unreadNotices.length ? ` ${unreadNotices.length}` : ''}</button>}
         <span className={`source-flag ${source}`}>{source === 'demo' ? '演示回退' : '实时 API'}</span>
       </div>
@@ -346,13 +380,18 @@ export function RoleWorkbench({
       {executive && <section className="workbench-portfolio panel">
         <header><div><span className="panel-kicker">HOTEL PORTFOLIO</span><h2>负责门店</h2><p>点击门店，查看部门、人员和每一项工作的完成状态。</p></div><strong>{hotels.length} 家</strong></header>
         {!hotels.length ? <EmptyState title="当前未解析到负责门店" description="请检查当前任职的组织数据范围；集团总部本身不会被误算为门店。" /> : <div className="workbench-hotel-table">
-          <div className="workbench-hotel-row head"><span>门店</span><span>工作总数</span><span>已完成</span><span>待提交</span><span>当前逾期</span><span>已补交</span><span>操作</span></div>
+          <div className="workbench-hotel-row head"><span>门店</span><span>当日完成率</span><span>本月完成率</span><span>今日待提交</span><span>当前逾期</span><span>已补交</span><span>操作</span></div>
           {hotels.map((hotel) => {
             const hotelItems = scopedWork.filter((item) => hotelIdFor(item) === hotel.id)
             const counts = countByStatus(hotelItems)
+            const summary = completion.data.hotels.find((item) => item.id === hotel.id)
+            const today = summary?.today ?? completionFromItems(work.data.filter((item) => hotelIdFor(item) === hotel.id))
+            const monthToDate = summary?.monthToDate ?? completionFromItems(work.data.filter((item) => hotelIdFor(item) === hotel.id), true)
             return <div className={`workbench-hotel-row ${selectedHotel?.id === hotel.id ? 'selected' : ''}`} key={hotel.id}>
               <span><strong>{hotel.name}</strong><small>{hotel.city || '授权门店'}{hotel.roomCount ? ` · ${hotel.roomCount} 间` : ''}</small></span>
-              <span>{hotelItems.length}</span><span>{counts.COMPLETED}</span><span>{counts.PENDING}</span>
+              <span className="workbench-rate-cell"><b>{today.completionRate}%</b><small>{today.onTimeCompleted}/{today.expected}</small></span>
+              <span className="workbench-rate-cell"><b>{monthToDate.completionRate}%</b><small>{monthToDate.onTimeCompleted}/{monthToDate.expected}</small></span>
+              <span>{today.pending}</span>
               <button type="button" className={counts.OVERDUE ? 'danger-text' : ''} onClick={() => openHotelStatus(hotel.id, 'OVERDUE')}>{counts.OVERDUE}</button>
               <button type="button" className={counts.LATE_SUBMITTED ? 'warning-text' : ''} onClick={() => openHotelStatus(hotel.id, 'LATE_SUBMITTED')}>{counts.LATE_SUBMITTED}</button>
               <span className="workbench-hotel-actions"><button type="button" className="link-button" onClick={() => openHotelStatus(hotel.id)}>进入门店</button><button type="button" className="link-button" onClick={() => openHotelStatus(hotel.id, 'OVERDUE')}>查看逾期</button></span>
@@ -397,5 +436,12 @@ export function RoleWorkbench({
       </div>}
     </>}
     {selected && <TeamWorkDrawer initial={selected} identity={identity} permissions={permissions} go={go} onClose={() => setSelected(undefined)} onChanged={() => { void work.reload(); if (canReadTeam) void completion.reload() }} />}
+    {creatingTask && canManageDispatch && <TaskCreateDialog
+      identity={identity}
+      initialHotelId={selectedHotel?.id}
+      creationSource="WORKBENCH_QUICK_DISPATCH"
+      onClose={() => setCreatingTask(false)}
+      onCreated={async () => { await tasks.reload() }}
+    />}
   </section>
 }

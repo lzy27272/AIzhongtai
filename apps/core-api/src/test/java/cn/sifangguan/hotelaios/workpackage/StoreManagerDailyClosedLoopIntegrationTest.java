@@ -351,6 +351,13 @@ class StoreManagerDailyClosedLoopIntegrationTest {
         assertThat(workbenchSummary.path("monthToDate").path("expected").asInt())
                 .isGreaterThanOrEqualTo(workbenchSummary.path("today").path("expected").asInt());
         assertThat(workbenchSummary.path("hotels").findValuesAsText("id")).contains(HOTEL);
+        JsonNode hotelWorkbench = findById(workbenchSummary.path("hotels"), HOTEL);
+        assertThat(hotelWorkbench.path("departments").isArray()).isTrue();
+        assertThat(hotelWorkbench.path("departments").size()).isPositive();
+        assertThat(hotelWorkbench.path("departments").findValuesAsText("employeeId"))
+                .contains(GENERAL_MANAGER_EMPLOYEE);
+        assertThat(hotelWorkbench.path("departments").path(0).path("today")
+                .path("completionRate").asInt()).isBetween(0, 100);
         mockMvc.perform(identity(post("/api/v1/work-data/records/{recordId}/actions/review", recordId),
                         ASSISTANT_GENERAL_MANAGER, ASSISTANT_GENERAL_MANAGER_ASSIGNMENT)
                         .contentType("application/json")

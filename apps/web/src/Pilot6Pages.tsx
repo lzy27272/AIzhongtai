@@ -119,13 +119,13 @@ export function EnterpriseTemplateCenter({ identity, permissions }: { identity: 
   </section>
 }
 
-export function TaskCreateDialog({ identity, onClose, onCreated }: { identity: RoleContext; onClose: () => void; onCreated: () => Promise<void> }) {
+export function TaskCreateDialog({ identity, initialHotelId, creationSource = 'MANUAL_TASK_CENTER', onClose, onCreated }: { identity: RoleContext; initialHotelId?: string; creationSource?: string; onClose: () => void; onCreated: () => Promise<void> }) {
   const [assignments, setAssignments] = useState<AssignmentOption[]>([])
   const [standards, setStandards] = useState<StandardOption[]>([])
   const [templates, setTemplates] = useState<EnterpriseTemplate[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
-  const [form, setForm] = useState({ hotelId: '', assigneeAssignmentId: '', reviewerAssignmentId: '', standardVersionId: '', templateId: '', title: '', description: '', priority: 'NORMAL', dueAt: new Date(Date.now() + 24 * 3600_000).toISOString().slice(0, 16) })
+  const [form, setForm] = useState({ hotelId: initialHotelId ?? '', assigneeAssignmentId: '', reviewerAssignmentId: '', standardVersionId: '', templateId: '', title: '', description: '', priority: 'NORMAL', dueAt: new Date(Date.now() + 24 * 3600_000).toISOString().slice(0, 16) })
   const [saving, setSaving] = useState(false)
   useEffect(() => {
     let active = true
@@ -140,13 +140,16 @@ export function TaskCreateDialog({ identity, onClose, onCreated }: { identity: R
         hotelName: text(row, 'hotel_name', 'hotelName') || undefined,
       }))
       setAssignments(targetRows)
-      const firstHotel = targetRows.find((row) => row.hotelId)?.hotelId ?? targetRows[0]?.orgUnitId ?? ''
-      setForm((current) => ({ ...current, hotelId: current.hotelId || firstHotel }))
+      const availableHotelIds = new Set(targetRows.map((row) => row.hotelId ?? row.orgUnitId))
+      const firstHotel = initialHotelId && availableHotelIds.has(initialHotelId)
+        ? initialHotelId
+        : targetRows.find((row) => row.hotelId)?.hotelId ?? targetRows[0]?.orgUnitId ?? ''
+      setForm((current) => ({ ...current, hotelId: availableHotelIds.has(current.hotelId) ? current.hotelId : firstHotel }))
       setStandards(asList<Row>(standardRaw).map((row) => ({ versionId: text(row, 'latest_version_id', 'latestVersionId'), name: text(row, 'name'), status: text(row, 'lifecycle_status', 'lifecycleStatus') })).filter((row) => row.versionId))
       setTemplates(templateRows.flatMap((row) => row.lifecycleStatus === 'PUBLISHED' ? [row] : row.publishedVersionId && row.publishedConfiguration ? [{ ...row, latestVersionId: row.publishedVersionId, versionNo: row.publishedVersionNo ?? row.versionNo, lifecycleStatus: 'PUBLISHED', configuration: row.publishedConfiguration }] : []))
     }).catch((reason) => setError(reason instanceof Error ? reason.message : '任务上下文加载失败。')).finally(() => active && setLoading(false))
     return () => { active = false }
-  }, [identity.key])
+  }, [identity.key, initialHotelId])
   const hotels = useMemo(() => Array.from(new Map(assignments.map((row) => [
     row.hotelId ?? row.orgUnitId,
     { id: row.hotelId ?? row.orgUnitId, name: row.hotelName ?? row.orgName },
@@ -174,7 +177,7 @@ export function TaskCreateDialog({ identity, onClose, onCreated }: { identity: R
         workRecordId: null, title: form.title.trim(), description: form.description || null,
         priority: form.priority, dueAt: new Date(form.dueAt).toISOString(),
         sourceSnapshot: {
-          source: 'MANUAL_TASK_CENTER',
+          source: creationSource,
           templateId: form.templateId || null,
           templateVersionId: selectedTemplate?.latestVersionId ?? null,
           taskPolicy: selectedTemplate?.configuration.evidencePolicy ?? {},

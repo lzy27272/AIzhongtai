@@ -152,6 +152,25 @@ export type HotelWorkbenchMetric = {
   name: string
   today: WorkCompletionMetric
   monthToDate: WorkCompletionMetric
+  departments: DepartmentWorkbenchMetric[]
+}
+
+export type DepartmentWorkbenchMetric = {
+  id: string
+  name: string
+  today: WorkCompletionMetric
+  monthToDate: WorkCompletionMetric
+  employees: EmployeeWorkbenchMetric[]
+}
+
+export type EmployeeWorkbenchMetric = {
+  id: string
+  assignmentId: string
+  employeeId: string
+  name: string
+  positionName: string
+  today: WorkCompletionMetric
+  monthToDate: WorkCompletionMetric
 }
 
 export type WorkbenchSummary = {
