@@ -48,6 +48,8 @@ class WeComProtocolTest {
                 .isEqualTo("#/tasks?view=mine&taskId=" + task);
         assertThat(WeComOAuthService.validateReturnTo("#/daily-reports/" + task))
                 .isEqualTo("#/daily-reports/" + task);
+        assertThat(WeComOAuthService.validateReturnTo("#/my-work?expectationId=" + task))
+                .isEqualTo("#/my-work?expectationId=" + task);
         assertThat(WeComOAuthService.validateReturnTo("#/workbench"))
                 .isEqualTo("#/workbench");
         assertThatThrownBy(() -> WeComOAuthService.validateReturnTo("https://evil.example/tasks?taskId=" + task))
@@ -59,6 +61,12 @@ class WeComProtocolTest {
         assertThatThrownBy(() -> WeComOAuthService.validateReturnTo("#/daily-reports/" + task + "?admin=true"))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> WeComOAuthService.validateReturnTo("#/workbench?next=/admin"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> WeComOAuthService.validateReturnTo("#/my-work"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> WeComOAuthService.validateReturnTo("#/my-work?expectationId=not-a-uuid"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> WeComOAuthService.validateReturnTo("#/my-work?expectationId=" + task + "&next=/admin"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

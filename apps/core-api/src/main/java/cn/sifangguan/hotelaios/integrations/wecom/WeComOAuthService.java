@@ -24,6 +24,7 @@ import java.util.UUID;
 @ConditionalOnProperty(name = {"app.wecom.enabled", "app.security.local-login.enabled"}, havingValue = "true")
 public class WeComOAuthService {
     private static final Set<String> ALLOWED_TASK_QUERY_KEYS = Set.of("view", "taskId");
+    private static final Set<String> ALLOWED_MY_WORK_QUERY_KEYS = Set.of("expectationId");
     private final SecureRandom secureRandom = new SecureRandom();
     private final WeComProperties properties;
     private final WeComOAuthStore store;
@@ -148,8 +149,23 @@ public class WeComOAuthService {
             UUID.fromString(reportId);
             return value;
         }
+        if ("/my-work".equals(uri.getPath())) {
+            if (uri.getRawQuery() == null) {
+                throw new IllegalArgumentException("WeCom returnTo must include one expectationId");
+            }
+            var query = UriComponentsBuilder.fromUri(uri).build().getQueryParams();
+            if (!ALLOWED_MY_WORK_QUERY_KEYS.containsAll(query.keySet())) {
+                throw new IllegalArgumentException("WeCom returnTo contains an unsupported query parameter");
+            }
+            List<String> expectationIds = query.get("expectationId");
+            if (expectationIds == null || expectationIds.size() != 1) {
+                throw new IllegalArgumentException("WeCom returnTo must include one expectationId");
+            }
+            UUID.fromString(expectationIds.getFirst());
+            return value;
+        }
         if (!"/tasks".equals(uri.getPath())) {
-            throw new IllegalArgumentException("WeCom returnTo must target /workbench, /tasks or /daily-reports/{reportId}");
+            throw new IllegalArgumentException("WeCom returnTo must target /workbench, /my-work, /tasks or /daily-reports/{reportId}");
         }
         if (uri.getRawQuery() != null) {
             var query = UriComponentsBuilder.fromUri(uri).build().getQueryParams();
