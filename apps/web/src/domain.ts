@@ -93,8 +93,10 @@ export type WorkExpectation = {
   targetOrgName: string
   hotelOrgUnitId?: string
   hotelName?: string
+  departmentName?: string
   assigneeName: string
   positionName?: string
+  positionJobFamily?: string
   assignmentId?: string
   orgUnitId?: string
   employeeId?: string
@@ -133,6 +135,31 @@ export type WorkExpectation = {
   delegateAssignmentId?: string
   delegatedEmployeeName?: string
   ownerResting?: boolean
+}
+
+export type WorkCompletionMetric = {
+  expected: number
+  completed: number
+  onTimeCompleted: number
+  lateSubmitted: number
+  pending: number
+  overdue: number
+  completionRate: number
+}
+
+export type HotelWorkbenchMetric = {
+  id: string
+  name: string
+  today: WorkCompletionMetric
+  monthToDate: WorkCompletionMetric
+}
+
+export type WorkbenchSummary = {
+  asOfDate: string
+  monthStart: string
+  today: WorkCompletionMetric
+  monthToDate: WorkCompletionMetric
+  hotels: HotelWorkbenchMetric[]
 }
 
 export type EvidenceRequirement = {

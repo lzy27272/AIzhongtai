@@ -46,6 +46,13 @@ public class WorkExpectationController {
         return service.teamExpectations(status, businessDate);
     }
 
+    @GetMapping("/api/v1/team/workbench-summary")
+    public Map<String, Object> workbenchSummary(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate businessDate
+    ) {
+        return service.teamWorkbenchSummary(businessDate);
+    }
+
     @GetMapping("/api/v1/work-expectations/{expectationId}")
     public Map<String, Object> detail(@PathVariable UUID expectationId) {
         return service.expectationDetail(expectationId);

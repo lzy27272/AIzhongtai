@@ -342,6 +342,15 @@ class StoreManagerDailyClosedLoopIntegrationTest {
         assertThat(submittedExpectation.path("period_type").asText()).isEqualTo("DAY");
         assertThat(submittedExpectation.path("hotel_org_unit_id").asText()).isEqualTo(HOTEL);
         assertThat(submittedExpectation.path("hotel_name").asText()).isNotBlank();
+        JsonNode workbenchSummary = response(identity(get(
+                "/api/v1/team/workbench-summary?businessDate=" + businessDate), CEO, null), 200);
+        assertThat(workbenchSummary.path("asOfDate").asText()).isEqualTo(businessDate.toString());
+        assertThat(workbenchSummary.path("today").path("expected").asInt()).isPositive();
+        assertThat(workbenchSummary.path("today").path("completed").asInt()).isPositive();
+        assertThat(workbenchSummary.path("today").path("completionRate").asInt()).isBetween(0, 100);
+        assertThat(workbenchSummary.path("monthToDate").path("expected").asInt())
+                .isGreaterThanOrEqualTo(workbenchSummary.path("today").path("expected").asInt());
+        assertThat(workbenchSummary.path("hotels").findValuesAsText("id")).contains(HOTEL);
         mockMvc.perform(identity(post("/api/v1/work-data/records/{recordId}/actions/review", recordId),
                         ASSISTANT_GENERAL_MANAGER, ASSISTANT_GENERAL_MANAGER_ASSIGNMENT)
                         .contentType("application/json")

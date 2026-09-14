@@ -30,6 +30,27 @@ test('multi-hotel workbench supports overdue to late-submitted drill-down', () =
   assert.match(workbench, /部门员工统计/)
 })
 
+test('executive workbench keeps the hotel portfolio and opens the first hotel detail by default', () => {
+  assert.match(workbench, /\{executive && <section className="workbench-portfolio panel">/)
+  assert.match(workbench, /\(executive \|\| hotelManagementKeys\.has\(presentationKey\)\) \? hotels\[0\]/)
+  assert.match(workbench, /部门工作统计/)
+  assert.match(workbench, /部门员工工作统计/)
+  assert.match(workbench, /<h3>工作任务<\/h3>/)
+  assert.match(workbench, /今日个人工作/)
+  assert.match(workbench, /管理提醒/)
+})
+
+test('daily and month-to-date completion rates use the KPI on-time formula', () => {
+  assert.match(workbench, /当日完成率/)
+  assert.match(workbench, /截至当日月工作完成率/)
+  assert.match(workbench, /当日按时完成项 ÷ 当日应完成项/)
+  assert.match(workbench, /本月截至今日按时完成项 ÷ 同期应完成项/)
+  assert.match(workbench, /loadWorkbenchSummary/)
+  assert.match(workPackageService, /teamWorkbenchSummary/)
+  assert.match(workPackageService, /onTimeCompleted \* 100\.0 \/ expected/)
+  assert.match(workPackageService, /first_record\.submitted_at/)
+})
+
 test('mobile main tabs no longer expose task and notification centers', () => {
   const factory = mobile.slice(mobile.indexOf('const tabs ='), mobile.indexOf('const modules ='))
   assert.doesNotMatch(factory, /target: 'tasks'/)

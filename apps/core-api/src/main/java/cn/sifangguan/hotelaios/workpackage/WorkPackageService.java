@@ -595,6 +595,87 @@ public class WorkPackageService {
     }
 
     @Transactional(readOnly = true)
+    public Map<String, Object> teamWorkbenchSummary(LocalDate businessDate) {
+        TenantPrincipal principal = prepare();
+        accessPolicy.requireAnyPermission("work-record.review", "work-record.team-read");
+        ZoneId businessZone = ZoneId.of("Asia/Shanghai");
+        LocalDate today = LocalDate.now(businessZone);
+        LocalDate asOfDate = businessDate == null ? today : businessDate;
+        LocalDate monthStart = asOfDate.withDayOfMonth(1);
+        OffsetDateTime cutoff = asOfDate.equals(today)
+                ? OffsetDateTime.now(businessZone)
+                : asOfDate.plusDays(1).atStartOfDay(businessZone).minusNanos(1).toOffsetDateTime();
+        MapSqlParameterSource params = base(principal)
+                .addValue("monthStart", monthStart)
+                .addValue("asOfDate", asOfDate);
+        String visibility = orgVisibility(principal, params, "x.target_org_unit_id");
+        List<WorkbenchMetricRow> rows = jdbc.query("""
+                select x.business_date, x.due_at, x.status,
+                       first_record.submitted_at as first_submitted_at,
+                       hotel_context.id as hotel_org_unit_id,
+                       hotel_context.name as hotel_name
+                from work_expectation x
+                left join lateral (
+                    select min(w.submitted_at) as submitted_at
+                    from work_record w
+                    where w.tenant_id = x.tenant_id
+                      and w.work_expectation_id = x.id
+                      and w.submitted_at is not null
+                ) first_record on true
+                left join lateral (
+                    select hotel.id, hotel.name
+                    from org_unit_closure hotel_link
+                    join org_unit hotel
+                      on hotel.tenant_id = hotel_link.tenant_id
+                     and hotel.id = hotel_link.ancestor_id
+                     and hotel.unit_type = 'HOTEL'
+                    where hotel_link.tenant_id = x.tenant_id
+                      and hotel_link.descendant_id = x.target_org_unit_id
+                    order by hotel_link.depth
+                    limit 1
+                ) hotel_context on true
+                where x.tenant_id = :tenantId
+                  and x.business_date between :monthStart and :asOfDate
+                  and x.status not in ('WAIVED', 'CANCELLED')
+                """ + visibility + " order by x.business_date, hotel_context.name nulls last, x.due_at", params,
+                (rs, rowNum) -> new WorkbenchMetricRow(
+                        rs.getObject("business_date", LocalDate.class),
+                        rs.getObject("due_at", OffsetDateTime.class),
+                        rs.getString("status"),
+                        rs.getObject("first_submitted_at", OffsetDateTime.class),
+                        rs.getObject("hotel_org_unit_id", UUID.class),
+                        rs.getString("hotel_name")));
+
+        WorkbenchMetric totalToday = new WorkbenchMetric();
+        WorkbenchMetric totalMonth = new WorkbenchMetric();
+        Map<UUID, HotelWorkbenchMetric> hotelMetrics = new LinkedHashMap<>();
+        for (WorkbenchMetricRow row : rows) {
+            totalMonth.add(row, cutoff);
+            if (asOfDate.equals(row.businessDate())) {
+                totalToday.add(row, cutoff);
+            }
+            if (row.hotelOrgUnitId() != null) {
+                HotelWorkbenchMetric hotel = hotelMetrics.computeIfAbsent(row.hotelOrgUnitId(),
+                        ignored -> new HotelWorkbenchMetric(row.hotelOrgUnitId(), row.hotelName()));
+                hotel.monthToDate().add(row, cutoff);
+                if (asOfDate.equals(row.businessDate())) {
+                    hotel.today().add(row, cutoff);
+                }
+            }
+        }
+        List<Map<String, Object>> hotels = hotelMetrics.values().stream()
+                .sorted(Comparator.comparing(HotelWorkbenchMetric::name, Comparator.nullsLast(String::compareTo)))
+                .map(HotelWorkbenchMetric::toResponse)
+                .toList();
+        return response(
+                "asOfDate", asOfDate,
+                "monthStart", monthStart,
+                "today", totalToday.toResponse(),
+                "monthToDate", totalMonth.toResponse(),
+                "hotels", hotels);
+    }
+
+    @Transactional(readOnly = true)
     public List<Map<String, Object>> expectations(
             String status,
             UUID positionAssignmentId,
@@ -682,13 +763,15 @@ public class WorkPackageService {
         return jdbc.queryForList("""
                 select x.id, x.business_date, x.period_key, x.available_at, x.due_at, x.status,
                        x.row_version, x.waiver_allowed,
-                       x.position_assignment_id, e.id as employee_id, e.name as employee_name, p.name as position_name,
+                       x.position_assignment_id, e.id as employee_id, e.name as employee_name,
+                       p.name as position_name, p.job_family as position_job_family,
                        x.target_org_unit_id, o.name as target_org_unit_name,
                        i.id as work_package_item_id, i.item_code, i.name as item_name, i.item_type,
                        i.period_type,
                        i.form_version_id, i.submission_policy, i.reminder_policy, i.report_policy,
                        i.applicability_policy, i.execution_policy,
                        hotel_context.id as hotel_org_unit_id, hotel_context.name as hotel_name,
+                       department_context.name as department_name,
                        coalesce(h.guest_room_floor_count, 1) as guest_room_floor_count,
                        delegation.delegate_assignment_id, delegated_employee.name as delegated_employee_name,
                        delegation.owner_resting,
@@ -716,6 +799,18 @@ public class WorkPackageService {
                     order by hotel_link.depth
                     limit 1
                 ) hotel_context on true
+                left join lateral (
+                    select department.name
+                    from org_unit_closure department_link
+                    join org_unit department
+                      on department.tenant_id = department_link.tenant_id
+                     and department.id = department_link.ancestor_id
+                     and department.unit_type = 'DEPARTMENT'
+                    where department_link.tenant_id = x.tenant_id
+                      and department_link.descendant_id = x.target_org_unit_id
+                    order by department_link.depth
+                    limit 1
+                ) department_context on true
                 left join hotel_profile h
                   on h.tenant_id = x.tenant_id
                  and h.org_unit_id = coalesce(hotel_context.id, x.target_org_unit_id)
@@ -1777,6 +1872,91 @@ public class WorkPackageService {
             result.put(String.valueOf(values[index]), values[index + 1]);
         }
         return result;
+    }
+
+    private record WorkbenchMetricRow(
+            LocalDate businessDate,
+            OffsetDateTime dueAt,
+            String status,
+            OffsetDateTime firstSubmittedAt,
+            UUID hotelOrgUnitId,
+            String hotelName
+    ) {
+    }
+
+    private static final class WorkbenchMetric {
+        private static final Set<String> COMPLETED_STATUSES = Set.of("SUBMITTED", "SATISFIED");
+        private static final Set<String> OVERDUE_STATUSES = Set.of("MISSED", "FAILED");
+        private int expected;
+        private int completed;
+        private int onTimeCompleted;
+        private int lateSubmitted;
+        private int pending;
+        private int overdue;
+
+        private void add(WorkbenchMetricRow row, OffsetDateTime cutoff) {
+            expected++;
+            boolean hasSubmission = row.firstSubmittedAt() != null;
+            boolean isCompleted = hasSubmission || COMPLETED_STATUSES.contains(row.status());
+            if (isCompleted) {
+                completed++;
+                if (hasSubmission && !row.firstSubmittedAt().isAfter(row.dueAt())) {
+                    onTimeCompleted++;
+                } else if (hasSubmission) {
+                    lateSubmitted++;
+                }
+                return;
+            }
+            if (OVERDUE_STATUSES.contains(row.status()) || !row.dueAt().isAfter(cutoff)) {
+                overdue++;
+            } else {
+                pending++;
+            }
+        }
+
+        private Map<String, Object> toResponse() {
+            int completionRate = expected == 0 ? 0 : (int) Math.round(onTimeCompleted * 100.0 / expected);
+            return response(
+                    "expected", expected,
+                    "completed", completed,
+                    "onTimeCompleted", onTimeCompleted,
+                    "lateSubmitted", lateSubmitted,
+                    "pending", pending,
+                    "overdue", overdue,
+                    "completionRate", completionRate);
+        }
+    }
+
+    private static final class HotelWorkbenchMetric {
+        private final UUID id;
+        private final String name;
+        private final WorkbenchMetric today = new WorkbenchMetric();
+        private final WorkbenchMetric monthToDate = new WorkbenchMetric();
+
+        private HotelWorkbenchMetric(UUID id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        private String name() {
+            return name;
+        }
+
+        private WorkbenchMetric today() {
+            return today;
+        }
+
+        private WorkbenchMetric monthToDate() {
+            return monthToDate;
+        }
+
+        private Map<String, Object> toResponse() {
+            return response(
+                    "id", id,
+                    "name", name,
+                    "today", today.toResponse(),
+                    "monthToDate", monthToDate.toResponse());
+        }
     }
 
     private record GenerationCandidate(

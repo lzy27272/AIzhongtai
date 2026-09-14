@@ -23,7 +23,9 @@ import type {
   TaskTimelineItem,
   TaskEvidence,
   WorkExpectation,
+  WorkCompletionMetric,
   WorkPackage,
+  WorkbenchSummary,
   WorkRecordAttachment,
   WorkRecordDetail,
   WorkRecordSummary,
@@ -168,8 +170,10 @@ function normalizeExpectation(item: JsonObject): WorkExpectation {
     targetOrgName: text(item, ['targetOrgName', 'targetOrgUnitName', 'orgUnitName', 'target_org_name', 'target_org_unit_name'], '当前组织'),
     hotelOrgUnitId: text(item, ['hotelOrgUnitId', 'hotel_org_unit_id'], '') || undefined,
     hotelName: text(item, ['hotelName', 'hotel_name'], '') || undefined,
+    departmentName: text(item, ['departmentName', 'department_name'], '') || undefined,
     assigneeName: text(item, ['assigneeName', 'employeeName', 'employee_name', 'assignee_name'], '当前负责人'),
     positionName: text(item, ['positionName', 'position_name'], '') || undefined,
+    positionJobFamily: text(item, ['positionJobFamily', 'position_job_family'], '') || undefined,
     assignmentId: text(item, ['assignmentId', 'employeePositionAssignmentId', 'positionAssignmentId', 'assignment_id', 'position_assignment_id'], '') || undefined,
     orgUnitId: text(item, ['orgUnitId', 'targetOrgUnitId', 'org_unit_id', 'target_org_unit_id'], '') || undefined,
     employeeId: text(item, ['employeeId', 'employee_id'], '') || undefined,
@@ -273,6 +277,61 @@ export async function loadTeamWork(identity: ApiIdentity, options: { orgUnitId?:
     const payload = await apiRequest<unknown>(`${endpoint}?${query.toString()}`, identity)
     return asList<JsonObject>(payload).map(normalizeExpectation)
   }, () => demoValue<WorkExpectation[]>('demoExpectations'))
+}
+
+function normalizeCompletionMetric(payload: unknown): WorkCompletionMetric {
+  const item = object(payload)
+  return {
+    expected: number(item, ['expected']),
+    completed: number(item, ['completed']),
+    onTimeCompleted: number(item, ['onTimeCompleted', 'on_time_completed']),
+    lateSubmitted: number(item, ['lateSubmitted', 'late_submitted']),
+    pending: number(item, ['pending']),
+    overdue: number(item, ['overdue']),
+    completionRate: number(item, ['completionRate', 'completion_rate']),
+  }
+}
+
+function demoWorkbenchSummary(): WorkbenchSummary {
+  const asOfDate = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date())
+  const metric = (expected: number, onTime: number, late: number, pending: number, overdue: number): WorkCompletionMetric => ({
+    expected,
+    completed: onTime + late,
+    onTimeCompleted: onTime,
+    lateSubmitted: late,
+    pending,
+    overdue,
+    completionRate: expected ? Math.round(onTime * 100 / expected) : 0,
+  })
+  return {
+    asOfDate,
+    monthStart: `${asOfDate.slice(0, 8)}01`,
+    today: metric(5, 2, 1, 1, 1),
+    monthToDate: metric(36, 29, 2, 2, 3),
+    hotels: [
+      { id: '12000000-0000-0000-0000-000000000003', name: '杭州中心店', today: metric(4, 2, 1, 0, 1), monthToDate: metric(24, 20, 1, 1, 2) },
+      { id: '12000000-0000-0000-0000-000000000004', name: '上海滨江店', today: metric(1, 0, 0, 1, 0), monthToDate: metric(12, 9, 1, 1, 1) },
+    ],
+  }
+}
+
+export async function loadWorkbenchSummary(identity: ApiIdentity, date?: string) {
+  return withFallback(async () => {
+    const query = date ? `?businessDate=${encodeURIComponent(date)}` : ''
+    const payload = object(await apiRequest<unknown>(`/team/workbench-summary${query}`, identity))
+    return {
+      asOfDate: text(payload, ['asOfDate', 'as_of_date'], ''),
+      monthStart: text(payload, ['monthStart', 'month_start'], ''),
+      today: normalizeCompletionMetric(payload.today),
+      monthToDate: normalizeCompletionMetric(value(payload, 'monthToDate', 'month_to_date')),
+      hotels: asList<JsonObject>(payload.hotels).map((hotel) => ({
+        id: text(hotel, ['id']),
+        name: text(hotel, ['name'], '授权门店'),
+        today: normalizeCompletionMetric(hotel.today),
+        monthToDate: normalizeCompletionMetric(value(hotel, 'monthToDate', 'month_to_date')),
+      })),
+    } satisfies WorkbenchSummary
+  }, async () => demoWorkbenchSummary())
 }
 
 function normalizeAttachment(item: JsonObject): WorkRecordAttachment {
