@@ -99,3 +99,13 @@ Browser插件不可用，且Playwright自带Chromium未安装；遵循前端测�
 - 公网响应验证：无参数`/api/v1/integrations/wecom/oauth/callback`返回302并跳转企业微信OAuth，设置新的工作台校验Cookie、清除残留入职绑定Cookie、使用no-store策略，无`Content-Disposition`且响应体为空；只提供`code`的异常请求返回401且不跳转。
 - Browser实页验证到达企业微信授权域名并显示“请在企业微信客户端打开链接”，未再出现callback文件下载页。外部Browser没有真实企业微信客户端登录态，因此最终账号交换与工作台落地仍需在用户企业微信客户端复验。
 - 控制器专项5项、后端全量253项（0失败、0错误、3跳过）和Flyway V1→V49通过；5个发布制品扫描63个归档、23728个条目，敏感信息0命中、0错误。本次仍为内部Pilot增量发布，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态。
+
+## 10. 2026-09-14 企业微信多岗位账号登录恢复
+
+- 功能提交为`0ff58b9ddc9c9ad3842a4183dbb6cb306f9997fa`。生产OAuth记录证明14:09的请求已通过状态和浏览器Cookie校验并领取供应商授权码，失败点位于身份解析；根因是绑定巡检把员工新增第二个有效任职错误视为必须暂停，与既定的一人多岗位规则冲突。
+- 修复后，多岗位员工的原默认任职只要仍有效，绑定保持ACTIVE并刷新任职快照；仅因`MULTIPLE_ACTIVE_ASSIGNMENTS`被历史误暂停的绑定自动恢复。默认任职缺失或失效、人工暂停、账号/员工失效等状态继续关闭式拦截。合法工作台OAuth在身份解析失败时跳转中台HTML故障页，避免iOS企业微信再次把空401回调识别为下载文件；入职绑定流和非法状态仍返回401。
+- 云端不可变发布版本为`20260914-pilot8-0ff58b9`。后端JAR SHA-256为`9ce2c1df4b6250471e52640b34bf778568bc0ac405bf1566bcc8e807f92ed08b`；Web沿用稳定包，ZIP SHA-256为`304717be3bf29f6c7b14f6d7ef8c1bc3e2183e9e8585ff00cd0add0e87f2e42a`，`index.html` SHA-256为`a7e4ce8e71dd34677b88b665aec64442e9d09d8b31edd447ed9b39c62c0e14f7`，服务器回读一致。
+- 部署前生成加密PostgreSQL备份`hotel_ai_os-auto-20260914T144613+0800.dump.enc`；5个发布制品敏感信息扫描0命中、0错误。Core API与Caddy均为`active`，健康状态为`UP`，Flyway JAR/数据库均为V49且失败迁移0，部署启动后的warning/error/exception为0。
+- 生产数据验证：绑定巡检已将多岗位账号`xiajun`和`sfglzy777`恢复为`ACTIVE`，清除`MULTIPLE_ACTIVE_ASSIGNMENTS`原因与岗位选择标记，并保留各自有效默认任职；永久删除账号仍维持REVOKED，不受本次恢复逻辑影响。
+- 公网与Browser验证：无参数OAuth回调返回302企业微信授权跳转，使用no-store策略、响应体为空且无`Content-Disposition`；`/wecom-auth`显示“无法安全打开中台”和明确凭证错误，页面无框架错误层，控制台错误/警告为0；“返回中台登录”可正常进入`/#/`登录页。真实企业微信授权码交换需由员工在企业微信客户端重新打开工作台完成最终复验。
+- 后端专项43项、全量256项（0失败、0错误、3跳过）及Flyway V1→V49通过。本次仍为内部Pilot增量发布，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态。
