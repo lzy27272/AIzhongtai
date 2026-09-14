@@ -295,6 +295,12 @@ type PendingWorkEvidence = {
 
 type WorkRecordFieldValue = string | number | boolean | string[]
 
+type WorkRecordSaveProgress = {
+  phase: 'draft' | 'upload' | 'submit'
+  completed: number
+  total: number
+}
+
 function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpectation; identity: RoleContext; onClose: () => void; onSaved: () => void }) {
   const [completion, setCompletion] = useState('')
   const [exception, setException] = useState('')
@@ -305,6 +311,7 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
   const [loadingRecord, setLoadingRecord] = useState(Boolean(item.recordId))
   const [supplement, setSupplement] = useState('')
   const [saving, setSaving] = useState<'draft' | 'submit' | 'supplement'>()
+  const [saveProgress, setSaveProgress] = useState<WorkRecordSaveProgress>()
   const [delegating, setDelegating] = useState(false)
   const [candidates, setCandidates] = useState<DelegationCandidate[]>([])
   const [delegateAssignmentId, setDelegateAssignmentId] = useState('')
@@ -433,7 +440,11 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
   }
   const persist = async (submitAfterUpload: boolean) => {
     try { validate(submitAfterUpload) } catch (reason) { setMessage(reason instanceof Error ? reason.message : '提交校验失败'); return }
+    const pendingAttachments = [...attachments]
+    let activeRecordId: string | undefined
+    let uploadedCount = 0
     setSaving(submitAfterUpload ? 'submit' : 'draft'); setMessage(undefined)
+    setSaveProgress({ phase: 'draft', completed: 0, total: pendingAttachments.length })
     try {
       const draftInput = { payload: recordPayload(), completionStatement: completion, exceptionStatement: exception || undefined, nextAction: nextAction || undefined }
       const created = existing?.status === 'DRAFT'
@@ -448,16 +459,42 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
         })
       const recordId = existing?.status === 'DRAFT' ? existing.id : String(created.id ?? created.recordId ?? '')
       if (!recordId) throw new Error('服务端未返回工作记录编号。')
-      for (const entry of attachments) await uploadWorkRecordAttachment(identity, recordId, entry.file, {
-        captureSource: entry.captureSource,
-        checkpointCode: entry.checkpointCode,
-        evidenceInstanceKey: entry.evidenceInstanceKey,
-        capturedAtClient: entry.capturedAtClient,
-      })
-      if (submitAfterUpload) await submitWorkRecordDraft(identity, recordId, Number(created.rowVersion ?? created.row_version ?? 0))
+      activeRecordId = recordId
+      for (const [index, entry] of pendingAttachments.entries()) {
+        setSaveProgress({ phase: 'upload', completed: index, total: pendingAttachments.length })
+        await uploadWorkRecordAttachment(identity, recordId, entry.file, {
+          captureSource: entry.captureSource,
+          checkpointCode: entry.checkpointCode,
+          evidenceInstanceKey: entry.evidenceInstanceKey,
+          capturedAtClient: entry.capturedAtClient,
+        })
+        uploadedCount = index + 1
+        setAttachments((current) => {
+          const uploadedIndex = current.indexOf(entry)
+          return uploadedIndex < 0 ? current : current.filter((_, currentIndex) => currentIndex !== uploadedIndex)
+        })
+      }
+      if (submitAfterUpload) {
+        setSaveProgress({ phase: 'submit', completed: uploadedCount, total: pendingAttachments.length })
+        await submitWorkRecordDraft(identity, recordId, Number(created.rowVersion ?? created.row_version ?? 0))
+      }
       await Promise.resolve(onSaved()); onClose()
-    } catch (error) { setMessage(error instanceof Error ? error.message : '工作记录保存失败') }
-    finally { setSaving(undefined) }
+    } catch (error) {
+      if (activeRecordId) {
+        try {
+          const refreshed = await loadWorkRecord(identity, activeRecordId)
+          setExisting(refreshed.data)
+        } catch { /* keep the original actionable error */ }
+      }
+      const reason = error instanceof Error ? error.message : '工作记录保存失败'
+      const remainingCount = Math.max(0, pendingAttachments.length - uploadedCount)
+      setMessage(uploadedCount > 0
+        ? `已安全保存 ${uploadedCount} 个附件，剩余 ${remainingCount} 个未上传；请在当前页面重试。${reason}`
+        : reason)
+    } finally {
+      setSaving(undefined)
+      setSaveProgress(undefined)
+    }
   }
   const addSupplement = async () => {
     if (!existing || !identity.businessActorAssignmentId || !supplement.trim()) return
@@ -491,8 +528,20 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
     catch (error) { setMessage(error instanceof Error ? error.message : '撤销转交失败') }
     finally { setDelegating(false) }
   }
+  const saveProgressText = saveProgress?.phase === 'upload'
+    ? `正在上传并安全扫描第 ${Math.min(saveProgress.completed + 1, saveProgress.total)}/${saveProgress.total} 个附件，请勿退出`
+    : saveProgress?.phase === 'submit'
+      ? '全部附件已安全保存，正在提交工作记录'
+      : saveProgress?.phase === 'draft'
+        ? '正在保存工作记录草稿'
+        : undefined
+  const submitButtonText = saving === 'submit'
+    ? saveProgress?.phase === 'upload'
+      ? `上传 ${saveProgress.completed}/${saveProgress.total}`
+      : saveProgress?.phase === 'submit' ? '正在提交…' : '正在保存…'
+    : item.status === 'FAILED' ? '重新提交' : '上传并提交'
   return <div className="modal-backdrop" role="presentation"><section className="modal work-record-modal" role="dialog" aria-modal="true">
-    <header><div><span className="panel-kicker">WORK RECORD · REAL API</span><h2>{item.title}</h2></div><button className="close" onClick={onClose}>×</button></header>
+    <header><div><span className="panel-kicker">WORK RECORD · REAL API</span><h2>{item.title}</h2></div><button className="close" aria-label="关闭" disabled={!!saving} onClick={onClose}>×</button></header>
     <div className="form-body"><div className="form-context"><strong>{item.formName ?? '岗位工作记录'}</strong><small>{item.formCode ?? '结构化表单'} · {policy.attachmentCountUnlimited ? `每个房号照片数量不限，整单安全上限 ${policy.maxAttachments} 个附件` : `最多 ${policy.maxAttachments} 个附件`} · 单文件 ≤ {Math.round(policy.maxFileSizeBytes / 1024 / 1024)}MB</small></div>
       {item.delegateAssignmentId && <div className="inline-warning">本事项已转交给 {item.delegatedEmployeeName ?? '指定员工'}{item.ownerResting ? '，店长今日休息' : ''}。</div>}
       {isOwner && item.executionPolicy?.delegationAllowed && !viewOnly && <section className="action-box"><label>转交本项工作<select value={delegateAssignmentId} onChange={(event) => setDelegateAssignmentId(event.target.value)}><option value="">请选择同店员工</option>{candidates.map((candidate) => <option value={candidate.assignmentId} key={candidate.assignmentId}>{candidate.employeeName} · {candidate.positionName}</option>)}</select></label><label className="checkbox-line"><input type="checkbox" checked={ownerResting} onChange={(event) => setOwnerResting(event.target.checked)} />店长今日休息</label><label>转交说明<input value={delegationReason} onChange={(event) => setDelegationReason(event.target.value)} placeholder="选填" /></label><div className="button-row"><button className="secondary" disabled={delegating || !delegateAssignmentId} onClick={() => void saveDelegation()}>{delegating ? '处理中…' : '确认转交'}</button>{item.delegateAssignmentId && <button className="secondary" disabled={delegating} onClick={() => void revokeDelegation()}>撤销转交</button>}</div></section>}
@@ -525,8 +574,8 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
           })}
         </section>}
         <label className="attachment-picker">补充文件{policy.attachmentRequired ? ' *' : '（可选）'}<input type="file" multiple accept=".jpg,.jpeg,.png,.pdf,.docx,.xlsx" onChange={(event) => { const selected = Array.from(event.target.files ?? []).map((file) => ({ file, captureSource: 'FILE_PICKER' as const })); appendAttachments(selected); event.currentTarget.value = '' }} /><small>{attachments.length ? `待上传 ${attachments.length} 个：${attachments.map((entry) => entry.file.name).join('、')}` : '可追加图片、PDF、Word、Excel；保存草稿后上传，提交时再次校验证据'}</small></label>{!!attachments.length && <div className="pending-evidence-list">{attachments.map((entry, index) => <button type="button" className="secondary" key={`${entry.file.name}-${index}`} onClick={() => setAttachments((current) => current.filter((_, currentIndex) => currentIndex !== index))}>{entry.evidenceInstanceKey ? `房号 ${entry.evidenceInstanceKey}` : entry.checkpointCode ? '现场' : '文件'} · {entry.file.name} ×</button>)}</div>}</>}
-      {!canSubmit && !viewOnly && <div className="inline-warning">此条接口数据尚未返回完整提交上下文；页面不会猜测任职或表单版本。</div>}{message && <div className="inline-error">{message}</div>}
-    </div><footer><button className="secondary" onClick={onClose}>关闭</button>{!viewOnly && !loadingRecord && <><button className="secondary" disabled={!!saving} onClick={() => void persist(false)}>{saving === 'draft' ? '保存中…' : '保存草稿'}</button><button className="primary" disabled={!!saving} onClick={() => void persist(true)}>{saving === 'submit' ? '上传并提交中…' : item.status === 'FAILED' ? '重新提交' : '上传并提交'}</button></>}</footer>
+      {!canSubmit && !viewOnly && <div className="inline-warning">此条接口数据尚未返回完整提交上下文；页面不会猜测任职或表单版本。</div>}{saveProgressText && <div className="work-save-progress" role="status" aria-live="polite"><strong>{saveProgressText}</strong>{saveProgress?.phase === 'upload' && <><progress value={saveProgress.completed} max={Math.max(1, saveProgress.total)} /><small>每个附件都要完成服务端安全扫描；已成功的附件会立即从待上传列表移除，失败后可断点重试。</small></>}</div>}{message && <div className="inline-error">{message}</div>}
+    </div><footer><button className="secondary" disabled={!!saving} onClick={onClose}>关闭</button>{!viewOnly && !loadingRecord && <><button className="secondary" disabled={!!saving} onClick={() => void persist(false)}>{saving === 'draft' ? saveProgress?.phase === 'upload' ? `上传 ${saveProgress.completed}/${saveProgress.total}` : '保存中…' : '保存草稿'}</button><button className="primary" disabled={!!saving} onClick={() => void persist(true)}>{submitButtonText}</button></>}</footer>
   </section></div>
 }
 
