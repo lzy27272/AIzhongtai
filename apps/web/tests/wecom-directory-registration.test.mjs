@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { validateDirectoryOnboardingRegistration } from '../src/features/wecom/directoryOnboardingRegistration.ts'
 
 const entry = readFileSync(new URL('../src/features/wecom/WecomDirectoryOnboardingEntry.tsx', import.meta.url), 'utf8')
+const registrationValidationSource = readFileSync(new URL('../src/features/wecom/directoryOnboardingRegistration.ts', import.meta.url), 'utf8')
 const api = readFileSync(new URL('../src/features/wecom/directoryOnboardingApi.ts', import.meta.url), 'utf8')
 const bindingAdministration = readFileSync(new URL('../src/features/wecom/WecomUserBindingAdministration.tsx', import.meta.url), 'utf8')
 const onboardingAdministration = readFileSync(new URL('../src/features/wecom/WecomDirectoryOnboardingAdministration.tsx', import.meta.url), 'utf8')
@@ -29,6 +31,37 @@ test('registration submits confirmation but never persists secrets in browser st
   assert.doesNotMatch(api, /localStorage|sessionStorage/)
 })
 
+test('registration validation explains short passwords instead of silently disabling submit', () => {
+  const invalid = validateDirectoryOnboardingRegistration({
+    requiresAccountRegistration: true,
+    displayName: '测试员工',
+    mobile: '13800138000',
+    loginName: 'test.employee',
+    secret: 'short12',
+    secretConfirmation: 'short12',
+    orgUnitId: 'hotel-id',
+  })
+  assert.equal(invalid.valid, false)
+  assert.equal(invalid.errors.credential, '密码必须为10至128位')
+  assert.match(entry, /disabled=\{busy\}/)
+  assert.doesNotMatch(entry, /disabled=\{busy \|\| !selection\.orgUnitId \|\| !accountValid\}/)
+})
+
+test('valid registration and pending-position selection pass client validation', () => {
+  const valid = validateDirectoryOnboardingRegistration({
+    requiresAccountRegistration: true,
+    displayName: '测试员工',
+    mobile: '+86 138-0013-8000',
+    loginName: 'test.employee',
+    secret: 'correct-password',
+    secretConfirmation: 'correct-password',
+    orgUnitId: 'hotel-id',
+  })
+  assert.equal(valid.valid, true)
+  assert.equal(valid.normalizedMobile, '13800138000')
+  assert.deepEqual(valid.errors, {})
+})
+
 test('migration reserves open logins and grants both HR reviewer roles', () => {
   assert.match(migration, /ux_wecom_onboarding_open_login/)
   assert.match(migration, /requested_password_hash LIKE 'pbkdf2_sha256\$%'/)
@@ -47,7 +80,7 @@ test('a single invitation entry performs reviewed mobile registration', () => {
 })
 
 test('mobile registration is validated and protected by database uniqueness', () => {
-  assert.match(entry, /\^1\[3-9\]\\d\{9\}\$/)
+  assert.match(registrationValidationSource, /\^1\[3-9\]\\d\{9\}\$/)
   assert.match(mobileRegistrationMigration, /requested_mobile/)
   assert.match(mobileRegistrationMigration, /ux_user_account_tenant_mobile/)
   assert.match(mobileRegistrationMigration, /ux_wecom_onboarding_open_mobile/)

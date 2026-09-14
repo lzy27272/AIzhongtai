@@ -8,15 +8,9 @@ import {
   submitDirectoryOnboarding,
   type DirectoryOnboardingContext,
 } from './directoryOnboardingApi'
+import { validateDirectoryOnboardingRegistration } from './directoryOnboardingRegistration'
 
 type Selection = { orgUnitId: string; positionId: string }
-
-function normalizeMainlandMobile(value: string) {
-  const digits = value.replace(/\D/g, '')
-  if (digits.length === 13 && digits.startsWith('86')) return digits.slice(2)
-  if (digits.length === 15 && digits.startsWith('0086')) return digits.slice(4)
-  return digits
-}
 
 const oauthErrors = {
   OAUTH_SESSION_INVALID: {
@@ -47,6 +41,7 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
   const [loginName, setLoginName] = useState('')
   const [password, setPassword] = useState('')
   const [passwordConfirmation, setPasswordConfirmation] = useState('')
+  const [validationAttempted, setValidationAttempted] = useState(false)
   const [submittedStatus, setSubmittedStatus] = useState<'PENDING_APPROVAL' | 'CONFLICT'>()
   const [busy, setBusy] = useState(Boolean(entry.exchangeCode))
   const [error, setError] = useState(entry.securityError)
@@ -80,15 +75,11 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
     selectable: position.selectable,
   }))).filter((position) => position.selectable), [hotel])
   const hasHotelOptions = Boolean(context?.hotels.length)
-  const normalizedMobile = normalizeMainlandMobile(mobile)
-  const mobileValid = /^1[3-9]\d{9}$/.test(normalizedMobile)
-  const accountValid = !context?.requiresAccountRegistration || (
-    displayName.trim().length > 0
-    && mobileValid
-    && /^[A-Za-z0-9][A-Za-z0-9._-]{2,119}$/.test(loginName.trim())
-    && password.length >= 10 && password.length <= 128
-    && password === passwordConfirmation
-  )
+  const registrationValidation = validateDirectoryOnboardingRegistration({
+    requiresAccountRegistration: Boolean(context?.requiresAccountRegistration),
+    displayName, mobile, loginName, secret: password, secretConfirmation: passwordConfirmation,
+    orgUnitId: selection.orgUnitId,
+  })
 
   const start = async () => {
     if (!entry.token) return
@@ -98,11 +89,16 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
   }
 
   const submit = async () => {
-    if (!context || !sessionToken || !selection.orgUnitId || !accountValid) return
+    setValidationAttempted(true)
+    if (!context || !sessionToken) {
+      setError('验证会话已失效，请从最新邀请重新进入')
+      return
+    }
+    if (!registrationValidation.valid) return
     setBusy(true); setError(undefined)
     try {
       const result = await submitDirectoryOnboarding(
-        sessionToken, displayName.trim(), normalizedMobile, loginName.trim(), password, passwordConfirmation,
+        sessionToken, displayName.trim(), registrationValidation.normalizedMobile, loginName.trim(), password, passwordConfirmation,
         selection.orgUnitId, selection.positionId || undefined, context.rowVersion,
       )
       setPassword(''); setPasswordConfirmation('')
@@ -142,23 +138,22 @@ export function WecomDirectoryOnboardingEntry({ entry, onReturn }: { entry: Weco
       {context && <>
         <div className="onboarding-person"><i aria-hidden="true">人</i><span><strong>{context.invitationSource === 'MANUAL_LINK' ? '新员工注册' : context.displayName}</strong><small>企业微信成员</small></span><b>● 身份已验证</b></div>
         {context.requiresAccountRegistration && <div className="onboarding-registration-fields">
-          <label>个人姓名<input value={displayName} maxLength={120} autoComplete="name" onChange={(event) => setDisplayName(event.target.value)} placeholder="请输入真实姓名" /></label>
-          <label>手机号<input type="tel" value={mobile} maxLength={20} inputMode="numeric" autoComplete="tel" onChange={(event) => setMobile(event.target.value)} placeholder="请输入本人11位手机号" /></label>
-          <label>登录账号<input value={loginName} maxLength={120} autoCapitalize="none" autoComplete="username" onChange={(event) => setLoginName(event.target.value)} placeholder="3位以上字母、数字、点、下划线或短横线" /></label>
-          <label>登录密码<input type="password" value={password} minLength={10} maxLength={128} autoComplete="new-password" onChange={(event) => setPassword(event.target.value)} placeholder="10至128位" /></label>
-          <label>确认密码<input type="password" value={passwordConfirmation} minLength={10} maxLength={128} autoComplete="new-password" onChange={(event) => setPasswordConfirmation(event.target.value)} placeholder="请再次输入密码" /></label>
-          {mobile && !mobileValid && <small className="field-error">请输入正确的11位手机号</small>}
-          {passwordConfirmation && password !== passwordConfirmation && <small className="field-error">两次输入的密码不一致</small>}
+          <label>个人姓名<input value={displayName} maxLength={120} autoComplete="name" aria-invalid={Boolean(registrationValidation.errors.displayName && (validationAttempted || displayName))} onChange={(event) => setDisplayName(event.target.value)} placeholder="请输入真实姓名" />{validationAttempted && registrationValidation.errors.displayName && <small className="field-error">{registrationValidation.errors.displayName}</small>}</label>
+          <label>手机号<input type="tel" value={mobile} maxLength={20} inputMode="numeric" autoComplete="tel" aria-invalid={Boolean(registrationValidation.errors.mobile && (validationAttempted || mobile))} onChange={(event) => setMobile(event.target.value)} placeholder="请输入本人11位手机号" />{(validationAttempted || Boolean(mobile)) && registrationValidation.errors.mobile && <small className="field-error">{registrationValidation.errors.mobile}</small>}</label>
+          <label>登录账号<input value={loginName} maxLength={120} autoCapitalize="none" autoComplete="username" aria-invalid={Boolean(registrationValidation.errors.loginName && (validationAttempted || loginName))} onChange={(event) => setLoginName(event.target.value)} placeholder="3位以上字母、数字、点、下划线或短横线" />{(validationAttempted || Boolean(loginName)) && registrationValidation.errors.loginName && <small className="field-error">{registrationValidation.errors.loginName}</small>}</label>
+          <label>登录密码<input type="password" value={password} minLength={10} maxLength={128} autoComplete="new-password" aria-invalid={Boolean(registrationValidation.errors.credential && (validationAttempted || password))} onChange={(event) => setPassword(event.target.value)} placeholder="10至128位" />{(validationAttempted || Boolean(password)) && registrationValidation.errors.credential && <small className="field-error">{registrationValidation.errors.credential}</small>}</label>
+          <label>确认密码<input type="password" value={passwordConfirmation} minLength={10} maxLength={128} autoComplete="new-password" aria-invalid={Boolean(registrationValidation.errors.passwordConfirmation && (validationAttempted || passwordConfirmation))} onChange={(event) => setPasswordConfirmation(event.target.value)} placeholder="请再次输入密码" />{(validationAttempted || Boolean(passwordConfirmation)) && registrationValidation.errors.passwordConfirmation && <small className="field-error">{registrationValidation.errors.passwordConfirmation}</small>}</label>
         </div>}
         {!hasHotelOptions && <div className="inline-error"><strong>暂无可申请门店</strong><p>当前没有启用中的门店，请联系行政人事核对组织配置。</p></div>}
         <label>选择门店<select value={hotelId} disabled={!hasHotelOptions} onChange={(event) => { setHotelId(event.target.value); setSelection({ orgUnitId: '', positionId: '' }) }}><option value="">{hasHotelOptions ? '请选择门店' : '暂无可申请门店'}</option>{context.hotels.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-        <label>选择岗位<select value={`${selection.orgUnitId}:${selection.positionId}`} disabled={!hotelId} onChange={(event) => { const [orgUnitId, positionId] = event.target.value.split(':'); setSelection({ orgUnitId, positionId }) }}><option value=":">请选择岗位</option>{hotel && <option value={`${hotel.id}:`}>岗位待分配</option>}{positionOptions.map((item) => <option key={`${item.orgUnitId}:${item.positionId}`} value={`${item.orgUnitId}:${item.positionId}`}>{item.label}</option>)}</select></label>
+        <label>选择岗位<select value={`${selection.orgUnitId}:${selection.positionId}`} disabled={!hotelId} aria-invalid={Boolean(validationAttempted && registrationValidation.errors.assignment)} onChange={(event) => { const [orgUnitId, positionId] = event.target.value.split(':'); setSelection({ orgUnitId, positionId }) }}><option value=":">请选择岗位</option>{hotel && <option value={`${hotel.id}:`}>岗位待分配</option>}{positionOptions.map((item) => <option key={`${item.orgUnitId}:${item.positionId}`} value={`${item.orgUnitId}:${item.positionId}`}>{item.label}</option>)}</select>{validationAttempted && registrationValidation.errors.assignment && <small className="field-error">{registrationValidation.errors.assignment}</small>}</label>
         {hotelId && <small className="onboarding-note">这里只展示后台已允许员工申请的岗位；如暂不确定，请选择“岗位待分配”，由审核员在审批时补充。</small>}
         <small className="onboarding-note">提交后由行政人事或行政人事主管审核；审核前账号不可登录，也不会开通岗位权限。</small>
       </>}
       {busy && !context && <div className="wecom-entry-progress"><div className="spinner"/><strong>正在验证企业微信身份</strong></div>}
+      {validationAttempted && !registrationValidation.valid && <div className="inline-error" role="alert"><strong>提交信息尚未完整</strong><p>请按页面红色提示修正后再次提交。</p></div>}
       {error && <div className="inline-error">{error}</div>}
-      {context ? <button className="primary" disabled={busy || !selection.orgUnitId || !accountValid} onClick={() => void submit()}>{busy ? '正在提交…' : '提交审核'}</button>
+      {context ? <button className="primary" disabled={busy} onClick={() => void submit()}>{busy ? '正在提交…' : '提交审核'}</button>
         : entry.token && !busy ? <button className="primary" onClick={() => void start()}>使用企业微信验证身份</button> : null}
       {error && <button className="secondary" onClick={onReturn}>返回</button>}
       <small className="onboarding-privacy">绑定成功不会自动开启企业微信群推送；UserID不会在页面、通知或审计中显示。</small>
