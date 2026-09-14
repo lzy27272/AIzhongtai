@@ -70,3 +70,13 @@ Browser插件不可用，且Playwright自带Chromium未安装；遵循前端测�
 - Core API与Caddy均为`active`，健康状态为`UP`；公网首页返回200，未授权`/api/v1/iam/me`和`/api/v1/work-packages`均返回401，部署后5分钟Core API warning/error为0。
 - 公网静态资源已回读到“所有岗位通用工作模板配置”；本次5个发布制品扫描63个归档、23726个条目，敏感信息0命中、0错误。
 - 本次仍为内部Pilot增量发布，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态，也不自动启用尚未审批的功能开关或真实人员映射。
+
+## 7. 2026-09-14 企业微信员工入职提交反馈修复
+
+- 功能提交为`a69241f`；修复员工注册信息不合规时“提交审核”按钮被静默禁用的问题。点击提交后会明确标记姓名、手机号、账号、密码、确认密码及门店/岗位错误；校验通过后仍使用原接口和服务端权限边界。
+- 云端不可变发布版本为`20260914-pilot8-a69241f`。后端JAR SHA-256为`8da50cdff2fe7b5bdce2457391d871b9aef352250ccb796db1addc43537a459c`；Web ZIP SHA-256为`3e7dfc99b4cbb6119ba2dcbad1eb27254e5c39c3fcba158773d9363acbc35306`；Web `index.html` SHA-256为`6052ef1d6080ac82f9d64b4afb3cb70a9f21fc00da84dff9e3ababe5eb53344b`，服务器与公网回读一致。
+- 部署前生成加密PostgreSQL备份`hotel_ai_os-auto-20260914T121150+0800.dump.enc`；密文及SHA校验文件均为`root:root:0600`，SHA-256复核通过。无新增数据库迁移，健康门禁为Flyway JAR V48、数据库V48、失败迁移0。
+- 首次执行在正式安装前的临时解压阶段发现上一批`/tmp/hotel-ai-os-release/web`残留并进入交互询问，已立即中止；旧Core/Web软链接、服务健康和候选目录均确认未变化。清理经绝对路径校验的临时子目录后重新执行，安装、迁移门禁和原子切换成功。
+- 部署后Core API与Caddy均为`active`，健康状态为`UP`；公网首页返回200，未授权`/api/v1/iam/me`返回401，公开主资源已回读到“密码必须为10至128位”和“提交信息尚未完整”，启动后的warning/error/exception为0。
+- 验证：Web全量77项、TypeScript和Pilot生产构建通过；移动端390×844页面闭环10项通过。5个变更文件和5个发布制品（含63个归档、23726个条目）敏感信息扫描均为0命中、0错误。
+- 本次仍为内部Pilot增量发布，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态；未使用真实员工资料执行注册或审批。
