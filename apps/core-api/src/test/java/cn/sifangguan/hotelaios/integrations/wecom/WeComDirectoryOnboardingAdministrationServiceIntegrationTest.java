@@ -1677,6 +1677,92 @@ class WeComDirectoryOnboardingAdministrationServiceIntegrationTest {
     }
 
     @Test
+    void reconciliationKeepsMultiPositionBindingActiveWhenPreferredAssignmentRemainsValid() {
+        String userId = "reconcile-multi-position-" + UUID.randomUUID();
+        UUID accountId = UUID.randomUUID();
+        UUID employeeId = UUID.randomUUID();
+        UUID preferredAssignmentId = UUID.randomUUID();
+        UUID roleAssignmentId = UUID.randomUUID();
+        UUID bindingId = UUID.randomUUID();
+        UUID additionalAssignmentId = UUID.randomUUID();
+        insertSourceIdentity(accountId, employeeId, preferredAssignmentId,
+                roleAssignmentId, bindingId, userId);
+        jdbc.update("""
+                insert into employee_position_assignment
+                    (id, tenant_id, employee_id, org_unit_id, position_id,
+                     is_primary, assignment_type, valid_from, status)
+                values (?, ?, ?, ?, ?, false, 'PERMANENT', current_date, 'ACTIVE')
+                """, additionalAssignmentId, TENANT, employeeId,
+                HOUSEKEEPING_DEPARTMENT, HOUSEKEEPING_POSITION);
+        WeComProperties weComProperties = mock(WeComProperties.class);
+        when(weComProperties.tenantId()).thenReturn(TENANT);
+        when(weComProperties.corpId()).thenReturn(CORP_ID);
+        WeComBindingReconciliationWorker worker = new WeComBindingReconciliationWorker(
+                new NamedParameterJdbcTemplate(DATA_SOURCE), mock(TenantDatabaseContext.class),
+                weComProperties, new ObjectMapper());
+
+        inTransaction(() -> { worker.reconcile(); return true; });
+
+        String expectedSnapshot = WeComUserBindingAdministrationService.sha256(
+                java.util.stream.Stream.of(preferredAssignmentId, additionalAssignmentId)
+                        .map(UUID::toString).sorted().reduce((left, right) -> left + "," + right).orElse(""));
+        assertThat(jdbc.queryForMap("""
+                select status, status_reason, preferred_assignment_id,
+                       assignment_selection_required, assignment_snapshot_hash
+                from wecom_user_binding where id = ?
+                """, bindingId))
+                .containsEntry("status", "ACTIVE")
+                .containsEntry("status_reason", null)
+                .containsEntry("preferred_assignment_id", preferredAssignmentId)
+                .containsEntry("assignment_selection_required", false)
+                .containsEntry("assignment_snapshot_hash", expectedSnapshot);
+    }
+
+    @Test
+    void reconciliationRecoversLegacyMultiPositionSuspensionWhenPreferredAssignmentIsValid() {
+        String userId = "reconcile-multi-position-recovery-" + UUID.randomUUID();
+        UUID accountId = UUID.randomUUID();
+        UUID employeeId = UUID.randomUUID();
+        UUID preferredAssignmentId = UUID.randomUUID();
+        UUID roleAssignmentId = UUID.randomUUID();
+        UUID bindingId = UUID.randomUUID();
+        UUID additionalAssignmentId = UUID.randomUUID();
+        insertSourceIdentity(accountId, employeeId, preferredAssignmentId,
+                roleAssignmentId, bindingId, userId);
+        jdbc.update("""
+                insert into employee_position_assignment
+                    (id, tenant_id, employee_id, org_unit_id, position_id,
+                     is_primary, assignment_type, valid_from, status)
+                values (?, ?, ?, ?, ?, false, 'PERMANENT', current_date, 'ACTIVE')
+                """, additionalAssignmentId, TENANT, employeeId,
+                HOUSEKEEPING_DEPARTMENT, HOUSEKEEPING_POSITION);
+        jdbc.update("""
+                update wecom_user_binding
+                set status = 'SUSPENDED', status_reason = 'MULTIPLE_ACTIVE_ASSIGNMENTS',
+                    assignment_selection_required = true
+                where id = ?
+                """, bindingId);
+        WeComProperties weComProperties = mock(WeComProperties.class);
+        when(weComProperties.tenantId()).thenReturn(TENANT);
+        when(weComProperties.corpId()).thenReturn(CORP_ID);
+        WeComBindingReconciliationWorker worker = new WeComBindingReconciliationWorker(
+                new NamedParameterJdbcTemplate(DATA_SOURCE), mock(TenantDatabaseContext.class),
+                weComProperties, new ObjectMapper());
+
+        inTransaction(() -> { worker.reconcile(); return true; });
+
+        assertThat(jdbc.queryForMap("""
+                select status, status_reason, preferred_assignment_id,
+                       assignment_selection_required
+                from wecom_user_binding where id = ?
+                """, bindingId))
+                .containsEntry("status", "ACTIVE")
+                .containsEntry("status_reason", null)
+                .containsEntry("preferred_assignment_id", preferredAssignmentId)
+                .containsEntry("assignment_selection_required", false);
+    }
+
+    @Test
     void unchangedPopulatedAssignmentSnapshotOnlyRefreshesTheDisplayName() {
         String userId = "unchanged-snapshot-" + UUID.randomUUID();
         UUID accountId = UUID.randomUUID();

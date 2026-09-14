@@ -48,12 +48,15 @@ public class WeComOAuthController {
         if (isBlank(code) && isBlank(state)) {
             return startResponse(service.start("#/workbench"), true);
         }
+        if (isBlank(code) || isBlank(state)) {
+            return unauthorizedResponse();
+        }
+        boolean taskFlow = browserVerifier != null && !browserVerifier.isBlank();
+        boolean bindingFlow = bindingBrowserVerifier != null && !bindingBrowserVerifier.isBlank();
+        if (taskFlow == bindingFlow) {
+            return unauthorizedResponse();
+        }
         try {
-            boolean taskFlow = browserVerifier != null && !browserVerifier.isBlank();
-            boolean bindingFlow = bindingBrowserVerifier != null && !bindingBrowserVerifier.isBlank();
-            if (taskFlow == bindingFlow) {
-                throw new IllegalArgumentException("企业微信OAuth浏览器状态无效");
-            }
             URI location = taskFlow
                     ? service.callback(code, state, browserVerifier)
                     : enrollmentService.callback(code, state, bindingBrowserVerifier);
@@ -63,11 +66,22 @@ public class WeComOAuthController {
                     .header(HttpHeaders.SET_COOKIE, clearVerifierCookie(BINDING_VERIFIER_COOKIE).toString())
                     .build();
         } catch (RuntimeException exception) {
-            return noStore(ResponseEntity.status(HttpStatus.UNAUTHORIZED))
-                    .header(HttpHeaders.SET_COOKIE, clearVerifierCookie(VERIFIER_COOKIE).toString())
-                    .header(HttpHeaders.SET_COOKIE, clearVerifierCookie(BINDING_VERIFIER_COOKIE).toString())
-                    .build();
+            if (taskFlow) {
+                return noStore(ResponseEntity.status(HttpStatus.FOUND))
+                        .header(HttpHeaders.LOCATION, "/wecom-auth")
+                        .header(HttpHeaders.SET_COOKIE, clearVerifierCookie(VERIFIER_COOKIE).toString())
+                        .header(HttpHeaders.SET_COOKIE, clearVerifierCookie(BINDING_VERIFIER_COOKIE).toString())
+                        .build();
+            }
+            return unauthorizedResponse();
         }
+    }
+
+    private static ResponseEntity<Void> unauthorizedResponse() {
+        return noStore(ResponseEntity.status(HttpStatus.UNAUTHORIZED))
+                .header(HttpHeaders.SET_COOKIE, clearVerifierCookie(VERIFIER_COOKIE).toString())
+                .header(HttpHeaders.SET_COOKIE, clearVerifierCookie(BINDING_VERIFIER_COOKIE).toString())
+                .build();
     }
 
     private static ResponseEntity<Void> startResponse(WeComOAuthService.Start start, boolean clearBindingVerifier) {

@@ -43,6 +43,7 @@ public class WeComBindingReconciliationWorker {
         List<BindingCandidate> bindings = jdbc.query("""
                 select binding.id, binding.account_id, binding.preferred_assignment_id,
                        binding.status, binding.status_reason, binding.assignment_snapshot_hash,
+                       binding.assignment_selection_required,
                        account.status as account_status,
                        exists (
                            select 1 from employee employee
@@ -61,7 +62,8 @@ public class WeComBindingReconciliationWorker {
                 rs.getObject("id", UUID.class), rs.getObject("account_id", UUID.class),
                 rs.getObject("preferred_assignment_id", UUID.class), rs.getString("status"),
                 rs.getString("status_reason"), rs.getString("assignment_snapshot_hash"),
-                rs.getString("account_status"), rs.getBoolean("employee_active")
+                rs.getBoolean("assignment_selection_required"), rs.getString("account_status"),
+                rs.getBoolean("employee_active")
         ));
         for (BindingCandidate binding : bindings) reconcile(binding);
     }
@@ -89,12 +91,21 @@ public class WeComBindingReconciliationWorker {
         }
         boolean preferredValid = binding.preferredAssignmentId() != null
                 && assignments.contains(binding.preferredAssignmentId());
-        boolean changed = !snapshot.equals(binding.snapshot());
-        if (!preferredValid || changed) {
-            transition(binding, "SUSPENDED", preferredValid ? binding.preferredAssignmentId() : null,
-                    snapshot, true, "MULTIPLE_ACTIVE_ASSIGNMENTS",
+        if (!preferredValid) {
+            transition(binding, "SUSPENDED", null, snapshot, true,
+                    "MULTIPLE_ACTIVE_ASSIGNMENTS",
                     "检测到多个有效任职，请人事选择默认企微任职后由管理员恢复");
+            return;
         }
+        boolean recoveringFromAssignmentAmbiguity = "SUSPENDED".equals(binding.status())
+                && "MULTIPLE_ACTIVE_ASSIGNMENTS".equals(binding.reason());
+        transition(binding,
+                recoveringFromAssignmentAmbiguity ? "ACTIVE" : binding.status(),
+                binding.preferredAssignmentId(), snapshot, false,
+                recoveringFromAssignmentAmbiguity ? null : binding.reason(),
+                recoveringFromAssignmentAmbiguity
+                        ? "默认企微任职仍然有效，多岗位绑定已自动恢复。"
+                        : null);
     }
 
     private void transition(
@@ -104,6 +115,7 @@ public class WeComBindingReconciliationWorker {
         boolean unchanged = status.equals(before.status())
                 && java.util.Objects.equals(preferredAssignmentId, before.preferredAssignmentId())
                 && java.util.Objects.equals(snapshot, before.snapshot())
+                && selectionRequired == before.selectionRequired()
                 && java.util.Objects.equals(reason, before.reason());
         if (unchanged) return;
         jdbc.update("""
@@ -239,7 +251,8 @@ public class WeComBindingReconciliationWorker {
 
     private record BindingCandidate(
             UUID id, UUID accountId, UUID preferredAssignmentId, String status,
-            String reason, String snapshot, String accountStatus, boolean employeeActive
+            String reason, String snapshot, boolean selectionRequired,
+            String accountStatus, boolean employeeActive
     ) { }
     private record ExpiredRequest(UUID id, UUID accountId) { }
 }

@@ -116,4 +116,23 @@ class WeComOAuthControllerTest {
                 .andExpect(header().string("Location", containsString("wecom-binding-result")));
         verify(enrollmentService).callback("provider-code", "state", "binding-verifier");
     }
+
+    @Test
+    void taskIdentityFailureRedirectsToReadableHtmlEntryInsteadOfDownloadResponse() throws Exception {
+        WeComOAuthService service = mock(WeComOAuthService.class);
+        WeComBindingEnrollmentService enrollmentService = mock(WeComBindingEnrollmentService.class);
+        when(service.callback("provider-code", "state", "browser-verifier"))
+                .thenThrow(new IllegalStateException("identity unavailable"));
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new WeComOAuthController(service, enrollmentService)).build();
+
+        mvc.perform(get("/api/v1/integrations/wecom/oauth/callback")
+                        .param("code", "provider-code").param("state", "state")
+                        .cookie(new Cookie(WeComOAuthController.VERIFIER_COOKIE, "browser-verifier")))
+                .andExpect(status().isFound())
+                .andExpect(header().string("Location", "/wecom-auth"))
+                .andExpect(header().string("Cache-Control", "no-store, private"))
+                .andExpect(header().stringValues("Set-Cookie", hasItem(containsString(
+                        "__Host-wecom_oauth_verifier=;"))))
+                .andExpect(header().doesNotExist("Content-Disposition"));
+    }
 }
