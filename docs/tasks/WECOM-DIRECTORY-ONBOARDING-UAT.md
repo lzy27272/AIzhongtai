@@ -37,8 +37,10 @@
 
 - 通讯录事件回调：`https://www.sfgzt.cn/api/v1/integrations/wecom/directory/callback`
 - 新员工身份回调：`https://www.sfgzt.cn/api/v1/integrations/wecom/directory-onboarding/oauth/callback`
-- 企业微信应用主页/审核结果免密码入口：`https://www.sfgzt.cn/api/v1/integrations/wecom/oauth/start?returnTo=%23/workbench`
+- 企业微信应用主页/审核结果免密码入口（推荐配置）：`https://www.sfgzt.cn/api/v1/integrations/wecom/oauth/start?returnTo=%23%2Fworkbench`
 - 通用 OAuth 回调：`https://www.sfgzt.cn/api/v1/integrations/wecom/oauth/callback`
+
+为兼容已把“应用主页”误配置为通用OAuth回调地址的既有企业微信应用，回调地址在完全没有`code/state`时会安全地重新发起工作台授权，而不会返回被手机端识别为`callback`下载文件的错误响应。该兼容入口不放宽正常回调校验；企业微信管理后台仍应在维护窗口改为上述推荐主页地址。
 
 ## UAT 顺序
 

@@ -35,19 +35,19 @@ public class WeComOAuthController {
     @GetMapping("/start")
     public ResponseEntity<Void> start(@RequestParam(required = false) String returnTo) {
         WeComOAuthService.Start start = service.start(returnTo);
-        return noStore(ResponseEntity.status(HttpStatus.FOUND))
-                .header(HttpHeaders.LOCATION, start.authorizationUri().toString())
-                .header(HttpHeaders.SET_COOKIE, verifierCookie(start.browserVerifier(), start.maxAgeSeconds()).toString())
-                .build();
+        return startResponse(start, false);
     }
 
     @GetMapping("/callback")
     public ResponseEntity<Void> callback(
-            @RequestParam String code,
-            @RequestParam String state,
+            @RequestParam(required = false) String code,
+            @RequestParam(required = false) String state,
             @CookieValue(name = VERIFIER_COOKIE, required = false) String browserVerifier,
             @CookieValue(name = BINDING_VERIFIER_COOKIE, required = false) String bindingBrowserVerifier
     ) {
+        if (isBlank(code) && isBlank(state)) {
+            return startResponse(service.start("#/workbench"), true);
+        }
         try {
             boolean taskFlow = browserVerifier != null && !browserVerifier.isBlank();
             boolean bindingFlow = bindingBrowserVerifier != null && !bindingBrowserVerifier.isBlank();
@@ -70,6 +70,17 @@ public class WeComOAuthController {
         }
     }
 
+    private static ResponseEntity<Void> startResponse(WeComOAuthService.Start start, boolean clearBindingVerifier) {
+        ResponseEntity.BodyBuilder response = noStore(ResponseEntity.status(HttpStatus.FOUND))
+                .header(HttpHeaders.LOCATION, start.authorizationUri().toString())
+                .header(HttpHeaders.SET_COOKIE,
+                        verifierCookie(start.browserVerifier(), start.maxAgeSeconds()).toString());
+        if (clearBindingVerifier) {
+            response.header(HttpHeaders.SET_COOKIE, clearVerifierCookie(BINDING_VERIFIER_COOKIE).toString());
+        }
+        return response.build();
+    }
+
     @PostMapping("/exchange")
     public ResponseEntity<WeComOAuthModels.ExchangeResponse> exchange(
             @Valid @RequestBody WeComOAuthModels.ExchangeRequest request
@@ -87,6 +98,10 @@ public class WeComOAuthController {
         return ResponseCookie.from(name, "")
                 .httpOnly(true).secure(true).sameSite("Lax").path("/")
                 .maxAge(0).build();
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     private static <T extends ResponseEntity.HeadersBuilder<T>> T noStore(T builder) {

@@ -8,7 +8,9 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import java.net.URI;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.hasItem;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -35,6 +37,47 @@ class WeComOAuthControllerTest {
                 .andExpect(header().string("Set-Cookie", containsString("Secure")))
                 .andExpect(header().string("Set-Cookie", containsString("HttpOnly")))
                 .andExpect(header().string("Set-Cookie", containsString("SameSite=Lax")));
+    }
+
+    @Test
+    void callbackWithoutProviderParametersStartsSafeWorkbenchOAuth() throws Exception {
+        WeComOAuthService service = mock(WeComOAuthService.class);
+        WeComBindingEnrollmentService enrollmentService = mock(WeComBindingEnrollmentService.class);
+        when(service.start("#/workbench"))
+                .thenReturn(new WeComOAuthService.Start(URI.create("https://open.weixin.qq.com/authorize"),
+                        "fresh-browser-verifier", 600));
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new WeComOAuthController(service, enrollmentService)).build();
+
+        mvc.perform(get("/api/v1/integrations/wecom/oauth/callback")
+                        .cookie(new Cookie(WeComOAuthController.BINDING_VERIFIER_COOKIE, "stale-binding-verifier")))
+                .andExpect(status().isFound())
+                .andExpect(header().string("Location", "https://open.weixin.qq.com/authorize"))
+                .andExpect(header().string("Cache-Control", "no-store, private"))
+                .andExpect(header().stringValues("Set-Cookie", hasItem(containsString(
+                        "__Host-wecom_oauth_verifier=fresh-browser-verifier"))))
+                .andExpect(header().stringValues("Set-Cookie", hasItem(containsString(
+                        "__Host-wecom_binding_verifier=;"))))
+                .andExpect(header().stringValues("Set-Cookie", hasItem(containsString("Max-Age=0"))))
+                .andExpect(header().doesNotExist("Content-Disposition"));
+        verify(service).start("#/workbench");
+        verify(service, never()).callback(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        verify(enrollmentService, never()).callback(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void callbackWithOnlyOneProviderParameterStillFailsClosed() throws Exception {
+        WeComOAuthService service = mock(WeComOAuthService.class);
+        WeComBindingEnrollmentService enrollmentService = mock(WeComBindingEnrollmentService.class);
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new WeComOAuthController(service, enrollmentService)).build();
+
+        mvc.perform(get("/api/v1/integrations/wecom/oauth/callback")
+                        .param("code", "provider-code"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().doesNotExist("Location"))
+                .andExpect(header().string("Set-Cookie", containsString("Max-Age=0")));
+        verify(service, never()).start(org.mockito.ArgumentMatchers.any());
     }
 
     @Test
