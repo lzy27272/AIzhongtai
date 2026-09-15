@@ -163,3 +163,13 @@ Browser插件不可用，且Playwright自带Chromium未安装；遵循前端测�
 - 部署后Core API、Caddy、PostgreSQL、fail2ban和ClamAV均为`active`，运行进程目录与两个`current`软链接均指向新release，健康状态为`UP`；公开首页返回200，未授权身份接口返回401，顶层换票端点空凭证返回400，公开主资源包含新换票路径和会话标记，启动窗口无warning/error/exception。
 - 验证：后端全量267项通过（0失败、0错误、3跳过），Web全量111项、TypeScript及Pilot生产构建通过；5个发布输入扫描63个归档、23,740个条目，敏感信息0命中、0错误。真实企业微信客户端任务免登录仍需测试账号点击至少两个不同任务完成最终复验。
 - 本次仍为内部Pilot增量部署，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态。
+
+## 16. 2026-09-16 企业微信任务免重复登录双通道修复
+
+- 功能提交为`6f746bbb322a4d6f4855e0e5ab1288c29f372b42`，已快进合并并推送至GitHub `lzy27272/AIzhongtai:main`。生产OAuth审计显示用户最近两次任务点击均已完成供应商授权和服务端一次性交换，重复进入账号密码页的实际失败点是部分iOS企业微信WebView不稳定保存或回传HttpOnly会话Cookie。
+- 修复后，OAuth回调只签发未消费的一次性交换码并302跳转到同源`/wecom-auth`；Web以同源JSON请求消费该码，同时建立仅存在当前页面内存中的JWT会话，服务端仍下发Secure、HttpOnly、SameSite=Lax Cookie作为辅助通道。即使WebView丢弃Cookie，当前任务也可依靠内存会话直接进入；一次性码不写入Web存储，使用后立即失效，任务目标继续经过白名单校验。
+- 云端不可变发布版本为`20260916-pilot8-6f746bb`。后端JAR SHA-256为`04077d642292171cea317075375570f5cd7553ed80b243d338b361ae45e1f5f8`；Web ZIP SHA-256为`a7c3077411e3c22e42efbe90fe71e7eb579fbff24c6120b1ccc9f5cdc2b58a8b`；服务器与本地Web `index.html` SHA-256均为`64c66cc659b6f8096549c5680e757d88f8ec1171e88e44695a7ad248d7f921fe`。
+- 部署前生成并校验本地加密PostgreSQL备份`hotel_ai_os-daily-20260916T015346+0800.dump.enc`，权限为`root:root:0600`，密文SHA-256为`92f7eeaa68c84aab4f067cc639896291cc5cee88904d72df5b57386523dd01f0`；备份脚本已完成解密后的`pg_restore --list`可恢复性检查。异地备份仍未配置，服务按预期以`OFFSITE_BACKUP_CONFIG_REQUIRED`退出，本次继续沿用已明确批准的内部Pilot例外，不表示异地备份门禁已满足。
+- 部署采用旧版本软链接自动回滚保护，最终Core API和Caddy均为`active`，健康状态为`UP`，Flyway保持V53且失败迁移0；公网首页返回200，未授权身份接口返回401，`/wecom-auth`返回200，企微OAuth启动入口返回302。线上Web制品已确认包含JSON交换路径且不再包含旧顶层表单换票路径，新服务启动窗口内warning及以上日志为0。
+- 验证：后端全量268项通过（0失败、0错误、3跳过），Web全量113项及企微入口专项7项通过，TypeScript与Pilot生产构建成功；5个发布输入敏感信息扫描0命中、0错误。Codex内置浏览器组件缺失，无法代替真实企业微信客户端完成最终账号点击；测试账号仍需从企业微信点击任一任务确认无需输入中台账号密码。
+- 本次仍为内部Pilot增量部署，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态。
