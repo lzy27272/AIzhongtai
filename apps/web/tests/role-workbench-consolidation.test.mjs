@@ -47,6 +47,17 @@ test('multi-hotel workbench supports overdue to late-submitted drill-down', () =
   assert.match(workPackageService, /"employees"/)
 })
 
+test('workbench headline metrics open status details with matching data scope', () => {
+  assert.match(workbench, /const openMetricStatus = \(status:/)
+  assert.match(workbench, /!executive && selectedHotel/)
+  assert.match(workbench, /scope: 'all', status, focus: 'work-status'/)
+  assert.match(workbench, /allScopeDrilldown \? undefined/)
+  assert.match(workbench, /id="workbench-status-detail" tabIndex=\{-1\}/)
+  assert.match(workbench, /scrollIntoView\(\{ behavior: 'smooth', block: 'start' \}\)/)
+  assert.match(workbench, /aria-label=\{`查看待提交工作明细/)
+  assert.match(workbench, /点击查看 ›/)
+})
+
 test('executive workbench keeps the hotel portfolio and opens the first hotel detail by default', () => {
   assert.match(workbench, /\{executive && <section className="workbench-portfolio panel">/)
   assert.match(workbench, /\(executive \|\| hotelManagementKeys\.has\(presentationKey\)\) \? hotels\[0\]/)

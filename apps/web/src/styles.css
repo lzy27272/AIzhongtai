@@ -950,7 +950,9 @@ dd { margin: 5px 0 0; color: #334f64; font-size: 10px; }
 .role-workbench-actions .secondary { color: #e8f6ff; border-color: rgba(255,255,255,.32); background: rgba(255,255,255,.08); }
 .role-workbench-actions .source-flag { border: 1px solid rgba(255,255,255,.13); }
 .workbench-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 14px; }
-.workbench-metrics > button { min-height: 112px; padding: 20px; display: grid; grid-template-columns: 42px 1fr auto; grid-template-rows: auto auto; align-items: center; gap: 2px 12px; border: 1px solid #e0e9ef; border-radius: 16px; color: #173b56; background: #fff; text-align: left; box-shadow: 0 10px 25px rgba(13,48,73,.045); }
+.workbench-metrics > button { min-height: 112px; padding: 20px; display: grid; grid-template-columns: 42px 1fr auto; grid-template-rows: auto auto; align-items: center; gap: 2px 12px; border: 1px solid #e0e9ef; border-radius: 16px; color: #173b56; background: #fff; text-align: left; cursor: pointer; box-shadow: 0 10px 25px rgba(13,48,73,.045); transition: transform .16s ease,border-color .16s ease,box-shadow .16s ease; }
+.workbench-metrics > button:hover { transform: translateY(-2px); border-color: #a9cde5; box-shadow: 0 14px 30px rgba(13,48,73,.09); }
+.workbench-metrics > button:focus-visible,.workbench-task-board:focus-visible,.workbench-scope-detail:focus-visible { outline: 3px solid rgba(38,121,238,.24); outline-offset: 3px; }
 .workbench-metrics > button > span { width: 42px; height: 42px; grid-row: 1/-1; display: grid; place-items: center; border-radius: 12px; color: #2477d7; background: #eaf3ff; font-weight: 800; }
 .workbench-metrics > button > small { color: #728697; font-size: 10px; }
 .workbench-metrics > button > strong { grid-row: 1/-1; grid-column: 3; font-size: 28px; }
@@ -959,6 +961,10 @@ dd { margin: 5px 0 0; color: #334f64; font-size: 10px; }
 .workbench-metrics > button.danger > strong,.danger-text { color: #cb4f4f!important; }
 .workbench-metrics > button.warning > span { color: #aa7417; background: #fff5dc; }
 .workbench-metrics > button.warning > strong,.warning-text { color: #b57916!important; }
+.workbench-scope-detail > header { align-items: flex-start; }
+.workbench-scope-detail > header p { margin: 5px 0 0; color: #7e909d; font-size: 11px; }
+.workbench-scope-detail > .workbench-status-tabs { margin: 14px 24px 0; }
+.workbench-scope-detail > .workbench-record-list { padding: 12px 24px 24px; }
 .workbench-rate-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
 .workbench-rate-card { padding: 19px 22px; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px 16px; border: 1px solid #dce7ed; border-radius: 15px; background: linear-gradient(135deg,#fff 0%,#f7fbfd 100%); box-shadow: 0 8px 24px rgba(13,48,73,.04); }
 .workbench-rate-card > div:first-child { grid-column: 1/-1; display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }

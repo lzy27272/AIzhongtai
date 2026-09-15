@@ -281,7 +281,8 @@ export function RoleWorkbench({
     derivedHotels.forEach((hotel) => { if (!rows.has(hotel.id)) rows.set(hotel.id, hotel) })
     return [...rows.values()].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
   }, [derivedHotels, hotelDirectory.data])
-  const selectedHotel = hotels.find((hotel) => hotel.id === routeParams.hotelId)
+  const allScopeDrilldown = routeParams.scope === 'all'
+  const selectedHotel = allScopeDrilldown ? undefined : hotels.find((hotel) => hotel.id === routeParams.hotelId)
     ?? ((executive || hotelManagementKeys.has(presentationKey)) ? hotels[0] : undefined)
   const selectedHotelItems = useMemo(() => selectedHotel
     ? scopedWork.filter((item) => hotelIdFor(item) === selectedHotel.id)
@@ -362,7 +363,24 @@ export function RoleWorkbench({
     if (linked) setSelected(linked)
   }, [routeParams.expectationId, scopedWork])
 
+  useEffect(() => {
+    if (loading || routeParams.focus !== 'work-status') return
+    const frame = window.requestAnimationFrame(() => {
+      const target = document.getElementById('workbench-status-detail')
+      target?.focus({ preventScroll: true })
+      target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [loading, routeParams.focus, routeParams.hotelId, routeParams.scope, statusFilter])
+
   const openHotelStatus = (hotelId: string, status: WorkbenchStatus = 'ALL') => go('workbench', { hotelId, status })
+  const openMetricStatus = (status: Exclude<WorkbenchStatus, 'ALL'>) => {
+    if (!executive && selectedHotel) {
+      go('workbench', { hotelId: selectedHotel.id, status, focus: 'work-status' })
+      return
+    }
+    go('workbench', { scope: 'all', status, focus: 'work-status' })
+  }
   const openTaskCreate = () => canExecutiveDispatch
     ? go('tasks', { create: 'true' })
     : setCreatingTask(true)
@@ -381,10 +399,10 @@ export function RoleWorkbench({
     {error && <div className="state-card error-state"><b>!</b><strong>工作台读取失败</strong><span>{error}</span><button className="secondary" onClick={() => void work.reload()}>重新加载</button></div>}
     {!loading && !error && <>
       <section className="workbench-metrics">
-        <button type="button" onClick={() => selectedHotel ? openHotelStatus(selectedHotel.id, 'PENDING') : undefined}><span>待</span><small>待提交</small><strong>{metricCounts.PENDING}</strong><em>仍需员工完成</em></button>
-        <button type="button" onClick={() => selectedHotel ? openHotelStatus(selectedHotel.id, 'COMPLETED') : undefined}><span>完</span><small>已完成</small><strong>{metricCounts.COMPLETED}</strong><em>已按时提交或达标</em></button>
-        <button type="button" className="danger" onClick={() => selectedHotel ? openHotelStatus(selectedHotel.id, 'OVERDUE') : undefined}><span>逾</span><small>当前逾期</small><strong>{metricCounts.OVERDUE}</strong><em>尚未完成提交</em></button>
-        <button type="button" className="warning" onClick={() => selectedHotel ? openHotelStatus(selectedHotel.id, 'LATE_SUBMITTED') : undefined}><span>补</span><small>逾期后补交</small><strong>{metricCounts.LATE_SUBMITTED}</strong><em>保留完整证据链</em></button>
+        <button type="button" aria-label={`查看待提交工作明细，共 ${metricCounts.PENDING} 项`} onClick={() => openMetricStatus('PENDING')}><span>待</span><small>待提交</small><strong>{metricCounts.PENDING}</strong><em>仍需员工完成 · 点击查看 ›</em></button>
+        <button type="button" aria-label={`查看已完成工作明细，共 ${metricCounts.COMPLETED} 项`} onClick={() => openMetricStatus('COMPLETED')}><span>完</span><small>已完成</small><strong>{metricCounts.COMPLETED}</strong><em>已按时提交或达标 · 点击查看 ›</em></button>
+        <button type="button" className="danger" aria-label={`查看当前逾期工作明细，共 ${metricCounts.OVERDUE} 项`} onClick={() => openMetricStatus('OVERDUE')}><span>逾</span><small>当前逾期</small><strong>{metricCounts.OVERDUE}</strong><em>尚未完成提交 · 点击查看 ›</em></button>
+        <button type="button" className="warning" aria-label={`查看逾期后补交工作明细，共 ${metricCounts.LATE_SUBMITTED} 项`} onClick={() => openMetricStatus('LATE_SUBMITTED')}><span>补</span><small>逾期后补交</small><strong>{metricCounts.LATE_SUBMITTED}</strong><em>保留完整证据链 · 点击查看 ›</em></button>
       </section>
 
       <section className="workbench-rate-grid" aria-label="工作完成率统计">
@@ -428,7 +446,7 @@ export function RoleWorkbench({
         <div className="workbench-detail-grid">
           <SummaryTable title="部门工作统计" subtitle="本门店各部门工作完成情况" rows={departmentRows} />
           <SummaryTable title="部门员工工作统计" subtitle="管理层查看部门及下级员工" rows={employeeRows} />
-          <section className="workbench-task-board">
+          <section className="workbench-task-board" id="workbench-status-detail" tabIndex={-1}>
             <header><div><span className="panel-kicker">WORK ITEMS</span><h3>工作任务</h3></div><button type="button" className="link-button" onClick={() => go('team-work', { hotelId: selectedHotel.id })}>查看全部</button></header>
             <div className="workbench-status-tabs">
               {(['ALL', 'COMPLETED', 'PENDING'] as WorkbenchStatus[]).map((status) => <button type="button" className={statusFilter === status ? 'active' : ''} key={status} onClick={() => openHotelStatus(selectedHotel.id, status)}>{statusLabel(status)} <b>{status === 'ALL' ? selectedHotelItems.length : hotelCounts[status]}</b></button>)}
@@ -438,6 +456,14 @@ export function RoleWorkbench({
             <WorkRows items={filteredWork} onSelect={setSelected} />
           </section>
         </div></div>
+      </section>}
+
+      {!selectedHotel && routeParams.focus === 'work-status' && <section className="workbench-scope-detail panel" id="workbench-status-detail" tabIndex={-1}>
+        <header><div><span className="panel-kicker">SCOPE WORK ITEMS</span><h2>权限范围 · {statusLabel(statusFilter)}</h2><p>展示当前岗位有权查看的全部门店、部门及下属工作。</p></div><button type="button" className="link-button" onClick={() => go('workbench', { scope: 'all', status: 'ALL', focus: 'work-status' })}>查看全部状态</button></header>
+        <div className="workbench-status-tabs" aria-label="权限范围工作状态">
+          {(['ALL', 'COMPLETED', 'PENDING', 'OVERDUE', 'LATE_SUBMITTED'] as WorkbenchStatus[]).map((status) => <button type="button" className={`${statusFilter === status ? 'active' : ''}${status === 'OVERDUE' ? ' danger' : ''}`} key={status} onClick={() => go('workbench', { scope: 'all', status, focus: 'work-status' })}>{statusLabel(status)} <b>{status === 'ALL' ? scopedWork.length : allCounts[status]}</b></button>)}
+        </div>
+        <WorkRows items={filteredWork} onSelect={setSelected} />
       </section>}
 
       <section className="workbench-bottom-grid">
