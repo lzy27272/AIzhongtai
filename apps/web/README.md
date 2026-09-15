@@ -51,9 +51,9 @@ Vite 将 `/api` 代理到 `http://localhost:8080`。
 ### 企业微信任务入口 V1
 
 - 群卡片的任务按钮先访问 `GET /api/v1/integrations/wecom/oauth/start?returnTo=%23/tasks%3Fview%3Dmine%26taskId%3D<UUID>`，由后端完成企微 OAuth 和 state 校验。
-- 后端回调到 `/wecom-auth?exchange_code=<一次性码>`；前端在发起任何请求前从地址栏清除该码，再以 `POST /api/v1/integrations/wecom/oauth/exchange` 完成交换。
-- 交换响应中的 `returnTo` 必须是带有效任务 UUID 的站内 `/tasks` 路由；前端二次校验后才进入现有任务详情。
-- 企微 Secret 不进入前端。交换所得用户短期令牌只保存在当前页面内存，不写入 URL、`localStorage` 或 `sessionStorage`；`sessionStorage` 仅记录不含凭据的会话来源标记。
+- 后端在已校验 OAuth state 与浏览器校验 Cookie 的回调中完成一次性交换，设置 HttpOnly 会话 Cookie 后直接跳回目标任务；一次性码不会进入浏览器 URL。`/wecom-auth` 仅保留用于兼容短期内已生成的旧回调。
+- 后端会再次校验 `returnTo` 只能指向允许的站内工作台、任务或日报路由，再生成最终跳转地址。
+- 企微 Secret 不进入前端；用户短期令牌只通过 `Secure`、`HttpOnly`、`SameSite=Lax` Cookie 传递，不写入 URL、`localStorage` 或 `sessionStorage`。`sessionStorage` 仅记录不含凭据的会话来源标记。
 - 普通 Pilot 账号密码登录保持原有流程，不经过企微入口。
 
 ## 演示回退

@@ -59,9 +59,20 @@ public class WeComOAuthController {
             return unauthorizedResponse();
         }
         try {
-            URI location = taskFlow
-                    ? service.callback(code, state, browserVerifier)
-                    : enrollmentService.callback(code, state, bindingBrowserVerifier);
+            if (taskFlow) {
+                WeComOAuthService.CallbackAuthorization authorization =
+                        service.callback(code, state, browserVerifier);
+                WeComOAuthModels.ExchangeResponse session = service.exchange(authorization.exchangeCode());
+                URI location = service.browserSessionLocation(session.returnTo());
+                return noStore(ResponseEntity.status(HttpStatus.FOUND))
+                        .header(HttpHeaders.LOCATION, location.toString())
+                        .header(HttpHeaders.SET_COOKIE,
+                                FederatedSessionCookie.create(session.accessToken(), session.expiresAt()).toString())
+                        .header(HttpHeaders.SET_COOKIE, clearVerifierCookie(VERIFIER_COOKIE).toString())
+                        .header(HttpHeaders.SET_COOKIE, clearVerifierCookie(BINDING_VERIFIER_COOKIE).toString())
+                        .build();
+            }
+            URI location = enrollmentService.callback(code, state, bindingBrowserVerifier);
             return noStore(ResponseEntity.status(HttpStatus.FOUND))
                     .header(HttpHeaders.LOCATION, location.toString())
                     .header(HttpHeaders.SET_COOKIE, clearVerifierCookie(VERIFIER_COOKIE).toString())

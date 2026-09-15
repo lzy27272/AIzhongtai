@@ -72,7 +72,7 @@ public class WeComOAuthService {
         return new Start(authorizationUri, browserVerifier, properties.stateTtl().toSeconds());
     }
 
-    public URI callback(String providerCode, String state, String browserVerifier) {
+    public CallbackAuthorization callback(String providerCode, String state, String browserVerifier) {
         String code = boundedSecret(providerCode, "WeCom authorization code");
         String rawState = boundedSecret(state, "WeCom OAuth state");
         String rawVerifier = boundedSecret(browserVerifier, "WeCom browser verifier");
@@ -83,8 +83,7 @@ public class WeComOAuthService {
             String exchangeCode = randomCode();
             store.authorize(attemptId, sha256(exchangeCode), identity.principal().actorId(),
                     identity.preferredAssignmentId());
-            String base = properties.frontendBaseUrl().toString().replaceAll("/+$", "");
-            return URI.create(base + "/wecom-auth?exchange_code=" + exchangeCode);
+            return new CallbackAuthorization(exchangeCode);
         } catch (RuntimeException exception) {
             store.fail(attemptId, exception);
             throw exception;
@@ -217,4 +216,7 @@ public class WeComOAuthService {
     }
 
     public record Start(URI authorizationUri, String browserVerifier, long maxAgeSeconds) { }
+
+    /** Server-only handoff between the verified OAuth callback and the session exchange. */
+    public record CallbackAuthorization(String exchangeCode) { }
 }
