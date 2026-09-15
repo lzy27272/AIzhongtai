@@ -41,7 +41,7 @@ public class WeComOAuthController {
     }
 
     @GetMapping("/callback")
-    public ResponseEntity<Void> callback(
+    public ResponseEntity<?> callback(
             @RequestParam(required = false) String code,
             @RequestParam(required = false) String state,
             @CookieValue(name = VERIFIER_COOKIE, required = false) String browserVerifier,
@@ -64,13 +64,13 @@ public class WeComOAuthController {
                         service.callback(code, state, browserVerifier);
                 WeComOAuthModels.ExchangeResponse session = service.exchange(authorization.exchangeCode());
                 URI location = service.browserSessionLocation(session.returnTo());
-                return noStore(ResponseEntity.status(HttpStatus.FOUND))
-                        .header(HttpHeaders.LOCATION, location.toString())
+                return noStore(ResponseEntity.ok())
+                        .contentType(MediaType.TEXT_HTML)
                         .header(HttpHeaders.SET_COOKIE,
                                 FederatedSessionCookie.create(session.accessToken(), session.expiresAt()).toString())
                         .header(HttpHeaders.SET_COOKIE, clearVerifierCookie(VERIFIER_COOKIE).toString())
                         .header(HttpHeaders.SET_COOKIE, clearVerifierCookie(BINDING_VERIFIER_COOKIE).toString())
-                        .build();
+                        .body(sessionLandingPage(location));
             }
             URI location = enrollmentService.callback(code, state, bindingBrowserVerifier);
             return noStore(ResponseEntity.status(HttpStatus.FOUND))
@@ -143,6 +143,32 @@ public class WeComOAuthController {
 
     private static boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private static String sessionLandingPage(URI location) {
+        String target = location.toASCIIString()
+                .replace("&", "&amp;")
+                .replace("\"", "&quot;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;");
+        return """
+                <!doctype html>
+                <html lang="zh-CN">
+                  <head>
+                    <meta charset="utf-8">
+                    <meta name="referrer" content="no-referrer">
+                    <meta http-equiv="cache-control" content="no-store">
+                    <meta http-equiv="refresh" content="0;url=%s">
+                    <title>正在进入任务</title>
+                  </head>
+                  <body>
+                    <main>
+                      <p>企业微信身份验证完成，正在进入任务…</p>
+                      <p><a href="%s">如未自动跳转，请点击继续</a></p>
+                    </main>
+                  </body>
+                </html>
+                """.formatted(target, target);
     }
 
     private static <T extends ResponseEntity.HeadersBuilder<T>> T noStore(T builder) {

@@ -12,6 +12,7 @@ const taskEntrySource = await readFile(
   new URL('../src/features/wecom/WecomTaskEntry.tsx', import.meta.url),
   'utf8',
 )
+const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8')
 
 test('企微回调只读取 exchange_code 并立即清除地址栏凭证', () => {
   let replaced = ''
@@ -75,6 +76,11 @@ test('顶层换票跳转建立非敏感会话标记并立即清理地址栏', ()
   assert.equal(consumed, true)
   assert.equal(established, 1)
   assert.equal(replaced, '/#/my-work?expectationId=123e4567-e89b-42d3-a456-426614174000')
+})
+
+test('企微会话由当前页面直接认领，不依赖 WebView 存储是否可用', () => {
+  assert.match(appSource, /const initialWecomSessionBootstrap = consumeWecomSessionBootstrap/)
+  assert.match(appSource, /initialWecomSessionBootstrap \|\| hasAccessToken\(\)/)
 })
 
 test('伪造或重复会话标记会被清理但不会建立登录状态', () => {

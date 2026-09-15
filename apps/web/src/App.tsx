@@ -101,7 +101,7 @@ const DailyOperationFeature = lazy(() => import('./features/dailyOperations/Dail
 const KpiFeature = lazy(() => import('./features/kpi/KpiRoutes').then((module) => ({ default: module.KpiRoutes })))
 const InvestmentFeature = lazy(() => import('./features/investments/InvestmentRoutes').then((module) => ({ default: module.InvestmentRoutes })))
 const ExecutiveTaskFeature = lazy(() => import('./features/executiveTasks/ExecutiveTaskRoutes').then((module) => ({ default: module.ExecutiveTaskRoutes })))
-consumeWecomSessionBootstrap(() => establishFederatedSession())
+const initialWecomSessionBootstrap = consumeWecomSessionBootstrap(() => establishFederatedSession())
 const initialWecomTaskEntry = consumeWecomTaskEntry()
 const initialWecomBindingEntry = consumeWecomBindingEntry()
 
@@ -1330,7 +1330,7 @@ function AuthenticatedApp({ onLogout }: { onLogout?: () => void }) {
 export default function App() {
   const [authenticated, setAuthenticated] = useState(() => {
     if (authMode === 'bearer' && consumeLogoutEntry(clearAccessToken)) return false
-    return authMode !== 'bearer' || hasAccessToken()
+    return authMode !== 'bearer' || initialWecomSessionBootstrap || hasAccessToken()
   })
   const [wecomTaskEntry, setWecomTaskEntry] = useState(initialWecomTaskEntry)
   const [wecomBindingEntry, setWecomBindingEntry] = useState(initialWecomBindingEntry)

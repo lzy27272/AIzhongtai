@@ -138,7 +138,7 @@ class WeComOAuthControllerTest {
     }
 
     @Test
-    void callbackExchangesServerSideAndRedirectsToTheTaskWithAProtectedSessionCookie() throws Exception {
+    void callbackExchangesServerSideAndCommitsTheCookieBeforeEnteringTheTask() throws Exception {
         WeComOAuthService service = mock(WeComOAuthService.class);
         WeComBindingEnrollmentService enrollmentService = mock(WeComBindingEnrollmentService.class);
         UUID accountId = UUID.randomUUID();
@@ -156,16 +156,19 @@ class WeComOAuthControllerTest {
         mvc.perform(get("/api/v1/integrations/wecom/oauth/callback")
                         .param("code", "provider-code").param("state", "state")
                         .cookie(new Cookie(WeComOAuthController.VERIFIER_COOKIE, "browser-verifier")))
-                .andExpect(status().isFound())
-                .andExpect(header().string("Location",
-                        "https://www.sfgzt.cn/?wecom_session=1#/my-work?expectationId=10000000-0000-0000-0000-000000000001"))
-                .andExpect(header().string("Location", org.hamcrest.Matchers.not(containsString("exchange_code"))))
+                .andExpect(status().isOk())
                 .andExpect(header().stringValues("Set-Cookie", hasItem(containsString(
                         "__Host-hotel_ai_wecom_session=signed.jwt.value"))))
                 .andExpect(header().stringValues("Set-Cookie", hasItem(containsString(
                         "__Host-wecom_oauth_verifier=;"))))
                 .andExpect(header().stringValues("Set-Cookie", hasItem(containsString("Max-Age=0"))))
-                .andExpect(header().string("Cache-Control", "no-store, private"));
+                .andExpect(header().string("Cache-Control", "no-store, private"))
+                .andExpect(header().doesNotExist("Location"))
+                .andExpect(content().contentTypeCompatibleWith("text/html"))
+                .andExpect(content().string(containsString("<meta http-equiv=\"refresh\"")))
+                .andExpect(content().string(containsString(
+                        "https://www.sfgzt.cn/?wecom_session=1#/my-work?expectationId=")))
+                .andExpect(content().string(org.hamcrest.Matchers.not(containsString("signed.jwt.value"))));
         verify(service).callback("provider-code", "state", "browser-verifier");
         verify(service).exchange("server-only-once");
         verify(service).browserSessionLocation(returnTo);
