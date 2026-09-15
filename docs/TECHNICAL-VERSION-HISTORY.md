@@ -3,12 +3,12 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前技术发行 | TECH-V0.1 |
-| 当前状态 | TECH-V0.1已发布；TECH-V0.2-PILOT.8持续部署至云端内部Pilot，工作台当日口径刷新与横向完整浏览已上线；TECH-V0.2正式发布门禁仍NO-GO |
+| 当前状态 | TECH-V0.1已发布；TECH-V0.2-PILOT.8持续部署至云端内部Pilot，横向证据照片强校验与主管端图片画廊已上线；TECH-V0.2正式发布门禁仍NO-GO |
 | 当前产品蓝图 | PRODUCT-V1.4 |
 | 当前API主版本 | API-V1（/api/v1） |
 | 当前OpenAPI契约 | 已发布0.1.0-sprint1；云端Pilot运行0.2.5-pilot.8 |
 | 当前数据库迁移 | 已发布DB-V4；云端Pilot运行Flyway V53 |
-| 当前后端制品 | 云端内部Pilot运行0.2.0-pilot.8（`20260915-pilot8-8ed46fb`） |
+| 当前后端制品 | 云端内部Pilot运行0.2.0-pilot.8（`20260915-pilot8-01733b0`） |
 | 最后更新 | 2026-09-15 |
 
 ## 0. 文档职责
@@ -58,7 +58,7 @@
 | TECH-V0.2-PILOT.5 | 已由PILOT.6替代 / 保留为回滚历史 | 真实PostgreSQL、真实应用账号、组织岗位人员维护、七岗位专属工作包、真实填报、图片附件、团队权限及驾驶舱 | PRODUCT-V1.2 |
 | TECH-V0.2-PILOT.6 | 已由PILOT.7替代 / 保留为回滚历史 | 统一工作提交、多附件、任务下达与证据、CEO岗位工作/任务/门店驾驶舱模板治理 | PRODUCT-V1.2 |
 | TECH-V0.2-PILOT.7 | 内部修复版 / 技术与公网业务闭环PASS / 待持续门店试用 | 可点击角色工作台与驾驶舱、原子任务投递、任务读取隔离、自动刷新接收、无标准人工验收、全角色任务目标矩阵、UAT数据清理 | PRODUCT-V1.2 |
-| TECH-V0.2-PILOT.8 | 云端内部Pilot持续迭代 / 工作台任务下达与V53分层完成率已部署 / 正式发行仍NO-GO | 业务任职、董事长受限交办、企业微信入职、岗位与人员治理、店长日常工作闭环、管理工作台一键下达，以及门店→部门→员工当日/月度完成率看板；真实业务账号仍需持续复验 | PRODUCT-V1.4 |
+| TECH-V0.2-PILOT.8 | 云端内部Pilot持续迭代 / 横向证据照片强校验与主管图片画廊已部署 / 正式发行仍NO-GO | 业务任职、董事长受限交办、企业微信入职、岗位与人员治理、店长日常工作闭环、管理工作台一键下达、分层完成率，以及带区域标签的证据图片画廊；真实业务账号仍需持续复验 | PRODUCT-V1.4 |
 | TECH-V0.2 | RC Final技术验证PASS / Release NO-GO / Unreleased | 标准→工作包→记录→评价→规则→任务→执行→验收闭环 | PRODUCT-V1.2 |
 | TECH-V0.3 | 预实施计划V1.1已输出 / 待技术冻结 / 未启动 / 开工前须按届时当前产品基线重评 | AI Gateway、工作/经营/点评/CEO Agent、AI简报和AI主动发现 | 原设计PRODUCT-V1.2；当前须重基线PRODUCT-V1.4 |
 | TECH-V0.4 | 建议阶段 | 绩效复盘、知识沉淀和标准优化建议 | PRODUCT-V1.2 |
@@ -429,6 +429,16 @@
 - 制品：后端沿用V53稳定JAR；Web ZIP SHA-256为`699900bd1467c6a54f3ad278fff3d80952247e3a867b8cf39d074f7a426fa2e4`，`index.html` SHA-256为`d770a5361f5687853728d946683c0f5e14c3b35d7a13aa0ea85772e402237b0f`，服务器与公网回读一致。
 - 部署：加密PostgreSQL备份`hotel_ai_os-auto-20260915T112759+0800.dump.enc`通过校验。首次激活因健康脚本瞬时SIGPIPE 141触发自动回滚；确认迁移成功、服务健康和候选哈希无误后，以健康重试及旧版本回滚保护重新激活成功。最终Core API/Caddy均active，健康UP，Flyway JAR/数据库53/53，公网首页200，未授权身份接口401，启动后warning为0。
 - 验证：Web 104项测试、TypeScript、Pilot生产构建及1280×900浏览器检查通过；线上真实登录后的数据刷新和横向操作仍由业务账号完成最终复验。
+- 依据：`CHANGELOG.md`、`docs/TECH-V0.2-PILOT.8-CLOUD-DEPLOYMENT-REPORT.md`。
+
+### 5.28 横向证据照片与主管图片画廊增量发布（2026-09-15）
+
+- 状态：CODE COMPLETE / DEPLOYED TO INTERNAL PILOT；不改变TECH-V0.2正式发行NO-GO。
+- 功能：工作记录与任务证据的新照片在前端和后端双重强制横向；后端先按EXIF方向归一化，再拒绝竖向或正方形照片并保存方向审计元数据。主管端团队工作详情直接展示全部图片，按检查区域和房号/实例标记，统一使用16:9横向画框并支持大图切换；历史照片不改写。
+- 版本：功能提交`01733b0e5c2a0d8af6cf2228f1283de483c1fc93`已快进合并并推送GitHub主线；云端不可变release为`20260915-pilot8-01733b0`。
+- 制品：后端JAR SHA-256为`e577d6741367ba290c8b3cb0df93dd0cb687369ed25a97e7e271b63e94b38ecd`；Web ZIP SHA-256为`bfd9a6eabd23d775dbd5cb553bb5a744a595ab4692f0ad9ed0308186097d9b71`，`index.html` SHA-256为`11ef63684d87995b81d82b129787f12bf2944ab029520745b7783df053837065`，服务器与公网回读一致。
+- 部署：加密PostgreSQL备份`hotel_ai_os-auto-20260915T133022+0800.dump.enc`返回`POSTGRES_BACKUP_OK`且权限为`root:root:0600`。无数据库迁移；Core API/Caddy均active，健康UP，Flyway JAR/数据库53/53且失败迁移0，公网首页200，未授权身份接口401。
+- 验证：Web 108项、TypeScript、Pilot生产构建、后端照片方向/EXIF专项及生产JAR构建通过；5个发布输入扫描63个归档、23739个条目，敏感信息0命中、0错误。Codex内置浏览器因运行组件版本不完整未能启动，登录后真实画廊与手机横向拍摄仍需业务账号复验。
 - 依据：`CHANGELOG.md`、`docs/TECH-V0.2-PILOT.8-CLOUD-DEPLOYMENT-REPORT.md`。
 
 ## 6. TECH-V0.3
