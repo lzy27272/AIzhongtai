@@ -86,6 +86,18 @@ class WeComProtocolTest {
     }
 
     @Test
+    void frontendExchangeRedirectContainsOnlyTheOpaqueOneTimeCode() {
+        WeComOAuthService service = new WeComOAuthService(
+                properties(), null, null, null, null, null, null, null);
+
+        assertThat(service.frontendExchangeLocation("Abcd_efghijklmnopqrstuvwxyz0123456789-AB"))
+                .isEqualTo(URI.create(
+                        "http://localhost:5173/wecom-auth?exchange_code=Abcd_efghijklmnopqrstuvwxyz0123456789-AB"));
+        assertThatThrownBy(() -> service.frontendExchangeLocation("bad&next=https://evil.example"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void botPostReturnsEncryptedJsonContentType() throws Exception {
         WeComCallbackService service = mock(WeComCallbackService.class);
         when(service.handleBotJson("sig", "1700000000", "nonce", "{\"encrypt\":\"cipher\"}"))

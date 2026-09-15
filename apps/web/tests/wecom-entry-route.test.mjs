@@ -97,9 +97,13 @@ test('伪造或重复会话标记会被清理但不会建立登录状态', () =>
   assert.equal(established, 0)
 })
 
-test('企微任务入口使用顶层 POST 建立 HttpOnly 会话', () => {
-  assert.match(taskEntrySource, /method="post"/)
-  assert.match(taskEntrySource, /\/integrations\/wecom\/oauth\/browser-exchange/)
-  assert.match(taskEntrySource, /formRef\.current\.submit\(\)/)
-  assert.doesNotMatch(taskEntrySource, /exchangeWecomCode/)
+test('企微任务入口以一次性码建立内存会话并保留 Cookie 辅助通道', () => {
+  assert.match(taskEntrySource, /exchangeWecomCode\(entry\.code\)/)
+  assert.match(taskEntrySource, /safeTaskDeepLink\(session\.returnTo\)/)
+  assert.match(taskEntrySource, /establishFederatedSession\(session\.accessToken, session\.expiresAt\)/)
+  assert.match(taskEntrySource, /onAuthenticated\(\)/)
+  assert.doesNotMatch(taskEntrySource, /browser-exchange/)
+  assert.doesNotMatch(taskEntrySource, /localStorage/)
+  assert.match(appSource, /const completeWecomTaskEntry = useCallback/)
+  assert.match(appSource, /onAuthenticated=\{completeWecomTaskEntry\}/)
 })

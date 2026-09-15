@@ -1,29 +1,35 @@
-import { useEffect, useRef, useState } from 'react'
-import { apiBase } from '../../api/client'
+import { useEffect, useState } from 'react'
+import { establishFederatedSession } from '../../api/client'
 import { product } from '../../product'
-import { type WecomTaskEntry } from './entryRoute'
+import { exchangeWecomCode } from './api'
+import { buildAppHashLocation, safeTaskDeepLink, type WecomTaskEntry } from './entryRoute'
 
 type Props = {
   entry: WecomTaskEntry
+  onAuthenticated: () => void
   onCancel: () => void
 }
 
-export function WecomTaskEntryPage({ entry, onCancel }: Props) {
+export function WecomTaskEntryPage({ entry, onAuthenticated, onCancel }: Props) {
   const [error, setError] = useState(entry.securityError)
-  const formRef = useRef<HTMLFormElement>(null)
-  const submitted = useRef(false)
 
   useEffect(() => {
     if (entry.securityError || !entry.code) return
-    if (submitted.current || !formRef.current) return
-    submitted.current = true
-    try {
-      formRef.current.submit()
-    } catch {
-      submitted.current = false
-      setError('企微会话跳转失败，请返回企业微信后重新打开任务。')
-    }
-  }, [entry])
+    let active = true
+    void exchangeWecomCode(entry.code)
+      .then((session) => {
+        if (!active) return
+        const target = safeTaskDeepLink(session.returnTo)
+        establishFederatedSession(session.accessToken, session.expiresAt)
+        window.history.replaceState(null, '', buildAppHashLocation(target, import.meta.env.BASE_URL))
+        onAuthenticated()
+      })
+      .catch((reason) => {
+        if (!active) return
+        setError(reason instanceof Error ? reason.message : '企微身份交换失败，请从企业微信重新打开中台。')
+      })
+    return () => { active = false }
+  }, [entry, onAuthenticated])
 
   return <main className="login-screen wecom-entry-screen">
     <section className="login-brand"><div className="login-logo">四</div><div><span className="eyebrow">WECOM SECURE ENTRY</span><h1>{product.name}</h1><p>正在通过企业微信确认成员身份。一次性凭证不会保存在浏览器地址、历史记录或本地存储中。</p></div></section>
@@ -34,14 +40,6 @@ export function WecomTaskEntryPage({ entry, onCancel }: Props) {
         <button className="secondary wecom-entry-action" type="button" onClick={onCancel}>返回中台登录</button>
         <small>请勿转发包含一次性凭证的链接，也不要向任何人提供企业微信验证码。</small>
       </> : <>
-        <form
-          ref={formRef}
-          action={`${apiBase}/integrations/wecom/oauth/browser-exchange`}
-          method="post"
-          hidden
-        >
-          <input type="hidden" name="exchangeCode" value={entry.code} />
-        </form>
         <div className="wecom-entry-progress"><div className="spinner" /><strong>正在建立安全会话</strong><span>请保持页面打开，无需输入中台密码。</span></div>
         <small>一次性凭证使用后立即失效；权限仍由中台组织、岗位和角色校验。</small>
       </>}

@@ -119,6 +119,15 @@ public class WeComOAuthService {
         return URI.create(base + "/?wecom_session=1" + hashRoute);
     }
 
+    URI frontendExchangeLocation(String rawExchangeCode) {
+        String exchangeCode = boundedSecret(rawExchangeCode, "WeCom exchange code");
+        if (!exchangeCode.matches("[A-Za-z0-9._~-]{16,512}")) {
+            throw new IllegalArgumentException("WeCom exchange code is invalid");
+        }
+        String base = properties.frontendBaseUrl().toString().replaceAll("/+$", "");
+        return URI.create(base + "/wecom-auth?exchange_code=" + exchangeCode);
+    }
+
     static String validateReturnTo(String raw) {
         if (raw == null || raw.isBlank()) {
             throw new IllegalArgumentException("WeCom returnTo must include one allowed internal destination");

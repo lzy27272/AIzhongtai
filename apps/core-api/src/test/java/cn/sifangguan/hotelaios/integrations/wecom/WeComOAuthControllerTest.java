@@ -138,40 +138,31 @@ class WeComOAuthControllerTest {
     }
 
     @Test
-    void callbackExchangesServerSideAndCommitsTheCookieBeforeEnteringTheTask() throws Exception {
+    void callbackHandsAOneTimeCodeToTheFrontendWithoutDependingOnCookiePersistence() throws Exception {
         WeComOAuthService service = mock(WeComOAuthService.class);
         WeComBindingEnrollmentService enrollmentService = mock(WeComBindingEnrollmentService.class);
-        UUID accountId = UUID.randomUUID();
-        String returnTo = "#/my-work?expectationId=10000000-0000-0000-0000-000000000001";
         when(service.callback("provider-code", "state", "browser-verifier"))
                 .thenReturn(new WeComOAuthService.CallbackAuthorization("server-only-once"));
-        when(service.exchange("server-only-once"))
-                .thenReturn(new WeComOAuthModels.ExchangeResponse(
-                        "signed.jwt.value", "Bearer", OffsetDateTime.now().plusMinutes(30),
-                        accountId, "Employee", returnTo));
-        when(service.browserSessionLocation(returnTo)).thenReturn(URI.create(
-                "https://www.sfgzt.cn/?wecom_session=1#/my-work?expectationId=10000000-0000-0000-0000-000000000001"));
+        when(service.frontendExchangeLocation("server-only-once")).thenReturn(URI.create(
+                "https://www.sfgzt.cn/wecom-auth?exchange_code=server-only-once"));
         MockMvc mvc = MockMvcBuilders.standaloneSetup(new WeComOAuthController(service, enrollmentService)).build();
 
         mvc.perform(get("/api/v1/integrations/wecom/oauth/callback")
                         .param("code", "provider-code").param("state", "state")
                         .cookie(new Cookie(WeComOAuthController.VERIFIER_COOKIE, "browser-verifier")))
-                .andExpect(status().isOk())
-                .andExpect(header().stringValues("Set-Cookie", hasItem(containsString(
-                        "__Host-hotel_ai_wecom_session=signed.jwt.value"))))
+                .andExpect(status().isFound())
+                .andExpect(header().string("Location",
+                        "https://www.sfgzt.cn/wecom-auth?exchange_code=server-only-once"))
                 .andExpect(header().stringValues("Set-Cookie", hasItem(containsString(
                         "__Host-wecom_oauth_verifier=;"))))
                 .andExpect(header().stringValues("Set-Cookie", hasItem(containsString("Max-Age=0"))))
                 .andExpect(header().string("Cache-Control", "no-store, private"))
-                .andExpect(header().doesNotExist("Location"))
-                .andExpect(content().contentTypeCompatibleWith("text/html"))
-                .andExpect(content().string(containsString("<meta http-equiv=\"refresh\"")))
-                .andExpect(content().string(containsString(
-                        "https://www.sfgzt.cn/?wecom_session=1#/my-work?expectationId=")))
-                .andExpect(content().string(org.hamcrest.Matchers.not(containsString("signed.jwt.value"))));
+                .andExpect(header().stringValues("Set-Cookie", org.hamcrest.Matchers.everyItem(
+                        org.hamcrest.Matchers.not(containsString("hotel_ai_wecom_session")))))
+                .andExpect(content().string(""));
         verify(service).callback("provider-code", "state", "browser-verifier");
-        verify(service).exchange("server-only-once");
-        verify(service).browserSessionLocation(returnTo);
+        verify(service).frontendExchangeLocation("server-only-once");
+        verify(service, never()).exchange(org.mockito.ArgumentMatchers.any());
 
         mvc.perform(get("/api/v1/integrations/wecom/oauth/callback")
                         .param("code", "provider-code").param("state", "state"))

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { apiCommand, apiRequest, authMode, changePassword, clearAccessToken, demoFallbackEnabled, establishFederatedSession, hasAccessToken, login, logout } from './api/client'
 import { consumeLogoutEntry } from './app/logoutEntry'
 import { bootstrapAssignmentId, bootstrapAssignments, canLoadSecondaryResources } from './app/authBootstrap'
@@ -1334,6 +1334,14 @@ export default function App() {
   })
   const [wecomTaskEntry, setWecomTaskEntry] = useState(initialWecomTaskEntry)
   const [wecomBindingEntry, setWecomBindingEntry] = useState(initialWecomBindingEntry)
+  const completeWecomTaskEntry = useCallback(() => {
+    setWecomTaskEntry(undefined)
+    setAuthenticated(true)
+  }, [])
+  const cancelWecomTaskEntry = useCallback(() => {
+    window.history.replaceState(null, '', buildAppHashLocation('#/', import.meta.env.BASE_URL))
+    setWecomTaskEntry(undefined)
+  }, [])
   useEffect(() => {
     const expired = () => setAuthenticated(false)
     window.addEventListener('hotel-ai-os:auth-expired', expired)
@@ -1341,10 +1349,8 @@ export default function App() {
   }, [])
   if (wecomTaskEntry) return <WecomTaskEntryPage
     entry={wecomTaskEntry}
-    onCancel={() => {
-      window.history.replaceState(null, '', buildAppHashLocation('#/', import.meta.env.BASE_URL))
-      setWecomTaskEntry(undefined)
-    }}
+    onAuthenticated={completeWecomTaskEntry}
+    onCancel={cancelWecomTaskEntry}
   />
   if (wecomBindingEntry) return <WecomBindingEnrollmentEntry
     entry={wecomBindingEntry}
