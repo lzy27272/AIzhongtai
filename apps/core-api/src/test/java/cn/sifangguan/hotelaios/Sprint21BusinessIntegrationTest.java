@@ -18,12 +18,13 @@ import org.springframework.test.web.servlet.MvcResult;
 
 import javax.imageio.ImageIO;
 import javax.sql.DataSource;
+import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.time.OffsetDateTime;
-import java.util.Base64;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -82,8 +83,7 @@ class Sprint21BusinessIntegrationTest {
 
     @Test
     void uploadsListsDownloadsAndDeletesRealImageWithScopeChecks() throws Exception {
-        byte[] png = Base64.getDecoder().decode(
-                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=");
+        byte[] png = landscapePng();
         MockMultipartFile file = new MockMultipartFile("file", "room-803.png", "image/png", png);
         MvcResult uploaded = mockMvc.perform(multipart("/api/v1/work-data/records/{recordId}/attachments/upload", HOUSEKEEPING_RECORD)
                         .file(file)
@@ -107,7 +107,7 @@ class Sprint21BusinessIntegrationTest {
                 .andReturn().getResponse().getContentAsByteArray();
         var sanitizedImage = ImageIO.read(new ByteArrayInputStream(downloaded));
         assertThat(sanitizedImage).isNotNull();
-        assertThat(sanitizedImage.getWidth()).isEqualTo(1);
+        assertThat(sanitizedImage.getWidth()).isEqualTo(2);
         assertThat(sanitizedImage.getHeight()).isEqualTo(1);
 
         mockMvc.perform(get("/api/v1/work-data/attachments/{attachmentId}/content", attachmentId)
@@ -120,6 +120,17 @@ class Sprint21BusinessIntegrationTest {
                 .andExpect(status().isNoContent());
         assertThat(jdbc.queryForObject("select count(*) from attachment where id = ?::uuid", Integer.class, attachmentId))
                 .isZero();
+    }
+
+    private static byte[] landscapePng() {
+        try {
+            BufferedImage image = new BufferedImage(2, 1, BufferedImage.TYPE_INT_RGB);
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            ImageIO.write(image, "png", output);
+            return output.toByteArray();
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
     }
 
     @Test

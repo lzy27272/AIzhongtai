@@ -20,6 +20,7 @@ import java.awt.Color;
 import java.awt.Font;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
+import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -122,6 +123,15 @@ public class AttachmentService {
         var evidenceMetadata = JsonNodeFactory.instance.objectNode()
                 .put("trustedTimestampSource", "SERVER_RECEIVED_AT")
                 .put("watermarked", "CAMERA".equals(captureSource));
+        if (upload.isImage()) {
+            evidenceMetadata.put("orientationPolicy", "LANDSCAPE")
+                    .put("sourceWidth", upload.sourceWidth())
+                    .put("sourceHeight", upload.sourceHeight())
+                    .put("normalizedWidth", upload.normalizedWidth())
+                    .put("normalizedHeight", upload.normalizedHeight())
+                    .put("exifOrientation", upload.exifOrientation())
+                    .put("orientationNormalized", upload.exifOrientation() != 1);
+        }
         if (evidenceInstanceKey != null) {
             evidenceMetadata.put("evidenceInstanceKey", evidenceInstanceKey);
         }
@@ -406,15 +416,23 @@ public class AttachmentService {
             String extension = extension(originalName);
             String mediaType = resolvedMediaType(file.getContentType(), extension, content);
             if (!ALLOWED_IMAGE_TYPES.contains(mediaType)) {
-                return new ValidatedUpload(content, mediaType, sha256(content));
+                return new ValidatedUpload(content, mediaType, sha256(content), false, 0, 0, 0, 0, 1);
             }
-            BufferedImage image = ImageIO.read(new ByteArrayInputStream(content));
-            if (image == null) {
+            BufferedImage sourceImage = ImageIO.read(new ByteArrayInputStream(content));
+            if (sourceImage == null) {
                 throw new IllegalArgumentException("文件内容不是有效图片");
             }
-            long pixels = Math.multiplyExact((long) image.getWidth(), (long) image.getHeight());
-            if (image.getWidth() <= 0 || image.getHeight() <= 0 || pixels > MAX_IMAGE_PIXELS) {
+            int sourceWidth = sourceImage.getWidth();
+            int sourceHeight = sourceImage.getHeight();
+            long pixels = Math.multiplyExact((long) sourceWidth, (long) sourceHeight);
+            if (sourceWidth <= 0 || sourceHeight <= 0 || pixels > MAX_IMAGE_PIXELS) {
                 throw new IllegalArgumentException("图片像素尺寸过大，无法作为工作证据上传");
+            }
+            int exifOrientation = MediaType.IMAGE_JPEG_VALUE.equals(mediaType)
+                    ? jpegExifOrientation(content) : 1;
+            BufferedImage image = normalizeImageOrientation(sourceImage, exifOrientation, mediaType);
+            if (image.getWidth() <= image.getHeight()) {
+                throw new IllegalArgumentException("照片必须横向拍摄（宽度需大于高度），请重新拍摄或选择");
             }
             String format = MediaType.IMAGE_PNG_VALUE.equals(mediaType) ? "png" : "jpeg";
             ByteArrayOutputStream sanitized = new ByteArrayOutputStream(content.length);
@@ -425,12 +443,114 @@ public class AttachmentService {
             if (sanitizedContent.length > maxSizeBytes) {
                 throw new IllegalArgumentException("重新编码后的图片超过允许大小");
             }
-            return new ValidatedUpload(sanitizedContent, mediaType, sha256(content));
+            return new ValidatedUpload(sanitizedContent, mediaType, sha256(content), true,
+                    sourceWidth, sourceHeight, image.getWidth(), image.getHeight(), exifOrientation);
         } catch (IllegalArgumentException exception) {
             throw exception;
         } catch (Exception exception) {
             throw new IllegalArgumentException("无法读取附件内容", exception);
         }
+    }
+
+    private BufferedImage normalizeImageOrientation(BufferedImage source, int orientation, String mediaType) {
+        int sourceWidth = source.getWidth();
+        int sourceHeight = source.getHeight();
+        boolean swapsDimensions = orientation >= 5 && orientation <= 8;
+        int targetWidth = swapsDimensions ? sourceHeight : sourceWidth;
+        int targetHeight = swapsDimensions ? sourceWidth : sourceHeight;
+        int imageType = MediaType.IMAGE_PNG_VALUE.equals(mediaType)
+                ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
+        BufferedImage normalized = new BufferedImage(targetWidth, targetHeight, imageType);
+        AffineTransform transform = switch (orientation) {
+            case 2 -> new AffineTransform(-1, 0, 0, 1, sourceWidth, 0);
+            case 3 -> new AffineTransform(-1, 0, 0, -1, sourceWidth, sourceHeight);
+            case 4 -> new AffineTransform(1, 0, 0, -1, 0, sourceHeight);
+            case 5 -> new AffineTransform(0, 1, 1, 0, 0, 0);
+            case 6 -> new AffineTransform(0, 1, -1, 0, sourceHeight, 0);
+            case 7 -> new AffineTransform(0, -1, -1, 0, sourceHeight, sourceWidth);
+            case 8 -> new AffineTransform(0, -1, 1, 0, 0, sourceWidth);
+            default -> new AffineTransform();
+        };
+        Graphics2D graphics = normalized.createGraphics();
+        try {
+            graphics.drawImage(source, transform, null);
+        } finally {
+            graphics.dispose();
+        }
+        return normalized;
+    }
+
+    private int jpegExifOrientation(byte[] content) {
+        if (!startsWith(content, 0xff, 0xd8)) return 1;
+        int offset = 2;
+        while (offset + 4 <= content.length) {
+            if ((content[offset] & 0xff) != 0xff) return 1;
+            while (offset < content.length && (content[offset] & 0xff) == 0xff) offset++;
+            if (offset >= content.length) return 1;
+            int marker = content[offset++] & 0xff;
+            if (marker == 0xda || marker == 0xd9) return 1;
+            if (marker == 0x01 || (marker >= 0xd0 && marker <= 0xd8)) continue;
+            if (offset + 2 > content.length) return 1;
+            int segmentLength = unsignedShort(content, offset, false);
+            if (segmentLength < 2 || offset + segmentLength > content.length) return 1;
+            int payloadStart = offset + 2;
+            int payloadLength = segmentLength - 2;
+            if (marker == 0xe1 && payloadLength >= 14
+                    && content[payloadStart] == 'E' && content[payloadStart + 1] == 'x'
+                    && content[payloadStart + 2] == 'i' && content[payloadStart + 3] == 'f'
+                    && content[payloadStart + 4] == 0 && content[payloadStart + 5] == 0) {
+                return tiffOrientation(content, payloadStart + 6, payloadLength - 6);
+            }
+            offset += segmentLength;
+        }
+        return 1;
+    }
+
+    private int tiffOrientation(byte[] content, int start, int length) {
+        if (length < 8 || start < 0 || start + length > content.length) return 1;
+        boolean littleEndian;
+        if (content[start] == 'I' && content[start + 1] == 'I') littleEndian = true;
+        else if (content[start] == 'M' && content[start + 1] == 'M') littleEndian = false;
+        else return 1;
+        if (unsignedShort(content, start + 2, littleEndian) != 42) return 1;
+        long directoryOffset = unsignedInt(content, start + 4, littleEndian);
+        if (directoryOffset > length - 2L) return 1;
+        int directory = start + (int) directoryOffset;
+        int entries = unsignedShort(content, directory, littleEndian);
+        int limit = start + length;
+        for (int index = 0; index < entries; index++) {
+            int entry = directory + 2 + index * 12;
+            if (entry < directory || entry + 12 > limit) return 1;
+            int tag = unsignedShort(content, entry, littleEndian);
+            if (tag != 0x0112) continue;
+            int type = unsignedShort(content, entry + 2, littleEndian);
+            long count = unsignedInt(content, entry + 4, littleEndian);
+            if (type != 3 || count < 1) return 1;
+            int orientation = unsignedShort(content, entry + 8, littleEndian);
+            return orientation >= 1 && orientation <= 8 ? orientation : 1;
+        }
+        return 1;
+    }
+
+    private int unsignedShort(byte[] content, int offset, boolean littleEndian) {
+        if (offset < 0 || offset + 2 > content.length) return 0;
+        int first = content[offset] & 0xff;
+        int second = content[offset + 1] & 0xff;
+        return littleEndian ? first | (second << 8) : (first << 8) | second;
+    }
+
+    private long unsignedInt(byte[] content, int offset, boolean littleEndian) {
+        if (offset < 0 || offset + 4 > content.length) return 0;
+        if (littleEndian) {
+            return (content[offset] & 0xffL)
+                    | ((content[offset + 1] & 0xffL) << 8)
+                    | ((content[offset + 2] & 0xffL) << 16)
+                    | ((content[offset + 3] & 0xffL) << 24);
+        }
+        return ((content[offset] & 0xffL) << 24)
+                | ((content[offset + 1] & 0xffL) << 16)
+                | ((content[offset + 2] & 0xffL) << 8)
+                | (content[offset + 3] & 0xffL);
     }
 
     private String resolvedMediaType(String suppliedType, String extension, byte[] content) {
@@ -711,7 +831,17 @@ public class AttachmentService {
     ) {
     }
 
-    private record ValidatedUpload(byte[] content, String mediaType, String sourceSha256) {
+    private record ValidatedUpload(
+            byte[] content,
+            String mediaType,
+            String sourceSha256,
+            boolean isImage,
+            int sourceWidth,
+            int sourceHeight,
+            int normalizedWidth,
+            int normalizedHeight,
+            int exifOrientation
+    ) {
     }
 
     private static final class GeneratedObjectCleanupException extends RuntimeException {

@@ -240,12 +240,52 @@ function AttachmentList({ items, disabled, loadingId, onPreview }: {
   </div>)}</div>
 }
 
+function isImageAttachment(item: WorkRecordAttachment) {
+  return item.mediaType.startsWith('image/') || /\.(?:jpe?g|png)$/i.test(item.originalName)
+}
+
+function evidenceContext(item: WorkRecordAttachment, expectation: WorkExpectation) {
+  const requirement = expectation.submissionPolicy?.evidenceRequirements
+    .find((candidate) => candidate.checkpointCode === item.checkpointCode)
+  const area = requirement?.label ?? (item.checkpointCode ? `检查区域：${item.checkpointCode}` : '补充现场照片')
+  const instance = item.evidenceInstanceKey
+    ? `${requirement?.instanceLabel ?? '房号'} ${item.evidenceInstanceKey}`
+    : undefined
+  return { area, instance }
+}
+
+function EvidenceGallery({ items, expectation, urls, errors, onPreview }: {
+  items: WorkRecordAttachment[]
+  expectation: WorkExpectation
+  urls: Record<string, string>
+  errors: Record<string, string>
+  onPreview: (item: WorkRecordAttachment) => void
+}) {
+  if (!items.length) return null
+  return <div className="evidence-gallery">{items.map((item) => {
+    const context = evidenceContext(item, expectation)
+    const url = urls[item.id]
+    const error = errors[item.id]
+    return <article key={item.id}>
+      <button type="button" className="evidence-gallery-image" disabled={!url} onClick={() => onPreview(item)} aria-label={`放大查看：${context.area}${context.instance ? `，${context.instance}` : ''}`}>
+        {url ? <img src={url} alt={`${context.area}${context.instance ? `，${context.instance}` : ''}`} loading="lazy" /> : <span>{error ? '图片读取失败' : '图片加载中…'}</span>}
+      </button>
+      <div className="evidence-gallery-caption">
+        <strong>{context.area}</strong>
+        <span>{context.instance && <b>{context.instance}</b>}<em>{item.captureSource === 'CAMERA' ? '现场拍摄' : '相册上传'}</em></span>
+        <small>{formatDate(item.capturedAtClient ?? item.receivedAt ?? item.createdAt)} · {formatSize(item.sizeBytes)} · {label(item.scanStatus)}</small>
+        {error && <small className="evidence-gallery-error">{error}</small>}
+      </div>
+    </article>
+  })}</div>
+}
+
 type DrawerNextAction =
   | { kind: 'section'; targetId: string; label: string }
   | { kind: 'route'; view: 'evaluations' | 'tasks'; params: Record<string, string>; label: string }
 
 type DrawerMessage = { tone: 'ok' | 'error'; text: string; next?: DrawerNextAction }
-type AttachmentPreview = { url: string; name: string; mediaType: string }
+type AttachmentPreview = { attachmentId?: string; url: string; name: string; mediaType: string; context?: string; ownedUrl: boolean }
 
 function resultId(result: unknown) {
   if (!result || typeof result !== 'object') return ''
@@ -274,15 +314,51 @@ export function TeamWorkDrawer({ initial, identity, permissions, go, onClose, on
   const [busy, setBusy] = useState<string>()
   const [message, setMessage] = useState<DrawerMessage>()
   const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreview>()
+  const [attachmentUrls, setAttachmentUrls] = useState<Record<string, string>>({})
+  const [attachmentLoadErrors, setAttachmentLoadErrors] = useState<Record<string, string>>({})
   const standards = expectation.standards ?? []
   const payloadFields = readablePayload(expectation, record?.payload ?? {})
   const isDemo = resource.source === 'demo'
   const allows = (permission: string) => permissions.includes(permission) || (demoFallbackEnabled && isDemo)
+  const imageAttachments = (record?.attachments ?? []).filter(isImageAttachment)
+  const documentAttachments = (record?.attachments ?? []).filter((item) => !isImageAttachment(item))
+  const attachmentLoadKey = imageAttachments.map((item) => item.id).join(':')
 
   useEffect(() => {
     if (!selectedStandard && standards.length) setSelectedStandard(standards[0].standardVersionId)
   }, [selectedStandard, standards])
-  useEffect(() => () => { if (attachmentPreview) URL.revokeObjectURL(attachmentPreview.url) }, [attachmentPreview])
+  useEffect(() => () => { if (attachmentPreview?.ownedUrl) URL.revokeObjectURL(attachmentPreview.url) }, [attachmentPreview])
+  useEffect(() => {
+    setAttachmentUrls({})
+    setAttachmentLoadErrors({})
+    if (isDemo || !imageAttachments.length) return
+    let active = true
+    let cursor = 0
+    const createdUrls: string[] = []
+    const loadNext = async () => {
+      while (active) {
+        const item = imageAttachments[cursor++]
+        if (!item) return
+        try {
+          const blob = await loadAttachmentContent(identity, item.id)
+          const url = URL.createObjectURL(blob)
+          if (!active) { URL.revokeObjectURL(url); return }
+          createdUrls.push(url)
+          setAttachmentUrls((current) => ({ ...current, [item.id]: url }))
+        } catch (error) {
+          if (active) setAttachmentLoadErrors((current) => ({
+            ...current,
+            [item.id]: error instanceof Error ? error.message : '附件读取失败',
+          }))
+        }
+      }
+    }
+    void Promise.all(Array.from({ length: Math.min(4, imageAttachments.length) }, loadNext))
+    return () => {
+      active = false
+      createdUrls.forEach((url) => URL.revokeObjectURL(url))
+    }
+  }, [attachmentLoadKey, identity.key, isDemo])
 
   const mutation = async <T,>(name: string, action: () => Promise<T>, success: string | DrawerMessage | ((result: T) => DrawerMessage)) => {
     if (isDemo) { setMessage({ tone: 'error', text: '演示回退仅用于页面走查，不会向业务系统写入数据。' }); return }
@@ -335,14 +411,34 @@ export function TeamWorkDrawer({ initial, identity, permissions, go, onClose, on
 
   const preview = async (attachment: WorkRecordAttachment) => {
     if (isDemo) { setMessage({ tone: 'error', text: '演示附件没有真实文件内容。' }); return }
+    const galleryUrl = attachmentUrls[attachment.id]
+    const context = evidenceContext(attachment, expectation)
+    if (galleryUrl) {
+      setAttachmentPreview({
+        attachmentId: attachment.id,
+        url: galleryUrl,
+        name: attachment.originalName,
+        mediaType: attachment.mediaType || 'image/jpeg',
+        context: `${context.area}${context.instance ? ` · ${context.instance}` : ''}`,
+        ownedUrl: false,
+      })
+      return
+    }
     setBusy(`preview-${attachment.id}`)
     setMessage(undefined)
     try {
       const blob = await loadAttachmentContent(identity, attachment.id)
-      if (attachmentPreview) URL.revokeObjectURL(attachmentPreview.url)
-      setAttachmentPreview({ url: URL.createObjectURL(blob), name: attachment.originalName, mediaType: attachment.mediaType || blob.type })
+      setAttachmentPreview({ url: URL.createObjectURL(blob), name: attachment.originalName, mediaType: attachment.mediaType || blob.type, ownedUrl: true })
     } catch (error) { setMessage({ tone: 'error', text: error instanceof Error ? error.message : '附件读取失败' }) }
     finally { setBusy(undefined) }
+  }
+
+  const movePreview = (direction: -1 | 1) => {
+    if (!attachmentPreview?.attachmentId) return
+    const currentIndex = imageAttachments.findIndex((item) => item.id === attachmentPreview.attachmentId)
+    if (currentIndex < 0) return
+    const next = imageAttachments[(currentIndex + direction + imageAttachments.length) % imageAttachments.length]
+    if (next && attachmentUrls[next.id]) void preview(next)
   }
 
   const evaluate = () => {
@@ -369,8 +465,10 @@ export function TeamWorkDrawer({ initial, identity, permissions, go, onClose, on
           <section className="detail-section"><h3>记录事实</h3><dl><div><dt>提交员工</dt><dd>{record.employeeName}</dd></div><div><dt>执行岗位</dt><dd>{record.positionName}</dd></div><div><dt>记录状态</dt><dd>{label(record.status)}</dd></div><div><dt>提交时间</dt><dd>{formatDate(record.submittedAt)}</dd></div></dl>{payloadFields.length ? <div className="payload-grid">{payloadFields.map((field) => <span key={field.key}><small>{field.label}</small><strong>{field.value}</strong></span>)}</div> : <p className="muted">本次提交没有额外的表单记录。</p>}{record.reviewReason && <div className="inline-warning">上次复核意见：{record.reviewReason}</div>}</section>
 
           <section className="detail-section"><h3>现场图片与附件</h3>
-            <p className="muted">团队工作仅复核员工提交的证据；附件上传、补充和删除由记录所属员工在“我的工作”中完成。</p>
-            <AttachmentList items={record.attachments} disabled={!!busy || isDemo} loadingId={busy?.startsWith('preview-') ? busy.slice('preview-'.length) : undefined} onPreview={preview} />
+            <p className="muted">图片按检查区域直接展示；历史竖图会完整适配在横向画框中。新上传照片必须横向，附件补充和删除仍由记录所属员工完成。</p>
+            {!record.attachments.length && <p className="muted">尚未上传现场图片或附件。</p>}
+            <EvidenceGallery items={imageAttachments} expectation={expectation} urls={attachmentUrls} errors={attachmentLoadErrors} onPreview={preview} />
+            {!!documentAttachments.length && <><h4 className="evidence-document-title">文档附件</h4><AttachmentList items={documentAttachments} disabled={!!busy || isDemo} loadingId={busy?.startsWith('preview-') ? busy.slice('preview-'.length) : undefined} onPreview={preview} /></>}
           </section>
 
           {allows('work-record.review') && <section className="action-box" id="work-review-action"><h3>工作记录复核</h3><p className="muted">复核只判断记录是否完整，不替代标准评价和任务验收。</p>{record.status === 'SUBMITTED' ? <><label>复核意见<textarea rows={2} value={reviewReason} onChange={(event) => setReviewReason(event.target.value)} placeholder="退回时必须填写原因" /></label><div><button className="primary" disabled={!!busy || isDemo} onClick={() => review('APPROVED')}>{busy === 'review-APPROVED' ? '处理中…' : '复核通过'}</button><button className="danger-button" disabled={!!busy || !reviewReason.trim() || isDemo} onClick={() => review('REJECTED')}>{busy === 'review-REJECTED' ? '处理中…' : '退回补充'}</button></div></> : <div className="inline-success">该记录已完成复核，无需重复操作。</div>}</section>}
@@ -382,7 +480,7 @@ export function TeamWorkDrawer({ initial, identity, permissions, go, onClose, on
         {isDemo && <div className="inline-warning">当前为演示回退：所有P0操作入口可见，但写操作被保护性禁用。</div>}
       </>}
     </div>
-    {attachmentPreview && <div className="attachment-lightbox" role="dialog" aria-modal="true" aria-label={`查看附件：${attachmentPreview.name}`}><div><header><span><strong>{attachmentPreview.name}</strong><small>现场证据预览</small></span><button type="button" className="close" onClick={() => setAttachmentPreview(undefined)} aria-label="关闭附件预览">×</button></header>{attachmentPreview.mediaType.startsWith('image/') ? <img src={attachmentPreview.url} alt={attachmentPreview.name} /> : attachmentPreview.mediaType === 'application/pdf' ? <iframe src={attachmentPreview.url} title={attachmentPreview.name} /> : <div className="attachment-download"><p>该格式不能在浏览器内直接预览。</p><a className="primary" href={attachmentPreview.url} download={attachmentPreview.name}>下载附件</a></div>}</div></div>}
+    {attachmentPreview && <div className="attachment-lightbox" role="dialog" aria-modal="true" aria-label={`查看附件：${attachmentPreview.name}`}><div><header><span><strong>{attachmentPreview.context ?? attachmentPreview.name}</strong><small>{attachmentPreview.context ? `${attachmentPreview.name} · 现场证据预览` : '现场证据预览'}</small></span><button type="button" className="close" onClick={() => setAttachmentPreview(undefined)} aria-label="关闭附件预览">×</button></header>{attachmentPreview.mediaType.startsWith('image/') ? <div className="attachment-lightbox-image">{imageAttachments.length > 1 && <button type="button" className="lightbox-nav previous" onClick={() => movePreview(-1)} aria-label="上一张图片">‹</button>}<img src={attachmentPreview.url} alt={attachmentPreview.context ?? attachmentPreview.name} />{imageAttachments.length > 1 && <button type="button" className="lightbox-nav next" onClick={() => movePreview(1)} aria-label="下一张图片">›</button>}</div> : attachmentPreview.mediaType === 'application/pdf' ? <iframe src={attachmentPreview.url} title={attachmentPreview.name} /> : <div className="attachment-download"><p>该格式不能在浏览器内直接预览。</p><a className="primary" href={attachmentPreview.url} download={attachmentPreview.name}>下载附件</a></div>}</div></div>}
   </aside></div>
 }
 

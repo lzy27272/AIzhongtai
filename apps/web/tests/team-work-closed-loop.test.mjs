@@ -40,6 +40,8 @@ test('record payload is unwrapped and rendered with Chinese business labels', ()
 
 test('attachments and management actions keep feedback in the visible drawer', () => {
   assert.match(pageSource, /className="attachment-lightbox"/)
+  assert.match(pageSource, /className="evidence-gallery"/)
+  assert.match(pageSource, /const context = evidenceContext\(item, expectation\)/)
   assert.match(pageSource, /loadingId=\{busy\?\.startsWith\('preview-'\)/)
   assert.match(pageSource, /className=\{`team-action-feedback/)
   assert.match(pageSource, /继续创建标准评价/)

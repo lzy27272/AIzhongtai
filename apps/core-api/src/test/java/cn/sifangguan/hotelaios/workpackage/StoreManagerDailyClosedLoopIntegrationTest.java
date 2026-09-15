@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -288,6 +289,44 @@ class StoreManagerDailyClosedLoopIntegrationTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("不支持的证据采集方式")));
 
+        mockMvc.perform(identity(multipart(
+                        "/api/v1/work-data/records/{recordId}/attachments/upload", recordId)
+                        .file(new MockMultipartFile("file", "portrait.png", "image/png", photo(600, 800, "png")))
+                        .param("captureSource", "FILE_PICKER"),
+                GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("照片必须横向拍摄")));
+
+        mockMvc.perform(identity(multipart(
+                        "/api/v1/work-data/records/{recordId}/attachments/upload", recordId)
+                        .file(new MockMultipartFile("file", "square.png", "image/png", photo(600, 600, "png")))
+                        .param("captureSource", "CAMERA"),
+                GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("照片必须横向拍摄")));
+
+        JsonNode exifNormalized = response(identity(multipart(
+                        "/api/v1/work-data/records/{recordId}/attachments/upload", recordId)
+                        .file(new MockMultipartFile("file", "mobile.jpg", "image/jpeg", exifRotatedPhoto()))
+                        .param("captureSource", "FILE_PICKER"),
+                GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT), 201);
+        byte[] normalizedMobilePhoto = mockMvc.perform(identity(get(
+                        "/api/v1/work-data/attachments/{attachmentId}/content", exifNormalized.path("id").asText()),
+                        GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        BufferedImage normalizedMobileImage = ImageIO.read(new ByteArrayInputStream(normalizedMobilePhoto));
+        assertThat(normalizedMobileImage.getWidth()).isEqualTo(800);
+        assertThat(normalizedMobileImage.getHeight()).isEqualTo(600);
+        assertThat(jdbc.queryForObject("""
+                select evidence_metadata ->> 'exifOrientation'
+                from attachment where tenant_id = ?::uuid and id = ?::uuid
+                """, String.class, TENANT, exifNormalized.path("id").asText())).isEqualTo("6");
+        mockMvc.perform(identity(delete(
+                        "/api/v1/work-data/records/{recordId}/attachments/{attachmentId}",
+                        recordId, exifNormalized.path("id").asText()),
+                        GENERAL_MANAGER, GENERAL_MANAGER_ASSIGNMENT))
+                .andExpect(status().isNoContent());
+
         OffsetDateTime capturedAt = OffsetDateTime.now().minusSeconds(2).withNano(0);
         MockMultipartFile photo = new MockMultipartFile(
                 "file", "appearance.png", "image/png", cameraPhoto());
@@ -305,6 +344,10 @@ class StoreManagerDailyClosedLoopIntegrationTest {
                 select evidence_metadata ->> 'trustedTimestampSource'
                 from attachment where tenant_id = ?::uuid and id = ?::uuid
                 """, String.class, TENANT, uploaded.path("id").asText())).isEqualTo("SERVER_RECEIVED_AT");
+        assertThat(jdbc.queryForObject("""
+                select evidence_metadata ->> 'orientationPolicy'
+                from attachment where tenant_id = ?::uuid and id = ?::uuid
+                """, String.class, TENANT, uploaded.path("id").asText())).isEqualTo("LANDSCAPE");
 
         byte[] watermarked = mockMvc.perform(identity(get(
                         "/api/v1/work-data/attachments/{attachmentId}/content", uploaded.path("id").asText()),
@@ -674,16 +717,44 @@ class StoreManagerDailyClosedLoopIntegrationTest {
     }
 
     private static byte[] cameraPhoto() {
+        return photo(800, 600, "png");
+    }
+
+    private static byte[] exifRotatedPhoto() {
         try {
-            BufferedImage image = new BufferedImage(800, 600, BufferedImage.TYPE_INT_RGB);
+            byte[] jpeg = photo(600, 800, "jpeg");
+            byte[] exif = {
+                    (byte) 0xff, (byte) 0xe1, 0x00, 0x22,
+                    'E', 'x', 'i', 'f', 0x00, 0x00,
+                    'I', 'I', 0x2a, 0x00,
+                    0x08, 0x00, 0x00, 0x00,
+                    0x01, 0x00,
+                    0x12, 0x01, 0x03, 0x00,
+                    0x01, 0x00, 0x00, 0x00,
+                    0x06, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00,
+            };
+            ByteArrayOutputStream output = new ByteArrayOutputStream(jpeg.length + exif.length);
+            output.write(jpeg, 0, 2);
+            output.write(exif);
+            output.write(jpeg, 2, jpeg.length - 2);
+            return output.toByteArray();
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static byte[] photo(int width, int height, String format) {
+        try {
+            BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
             Graphics2D graphics = image.createGraphics();
             graphics.setColor(new Color(235, 242, 247));
             graphics.fillRect(0, 0, image.getWidth(), image.getHeight());
             graphics.setColor(new Color(28, 79, 110));
-            graphics.fillRect(80, 90, 640, 360);
+            graphics.fillRect(width / 10, height / 10, width * 8 / 10, height * 6 / 10);
             graphics.dispose();
             ByteArrayOutputStream output = new ByteArrayOutputStream();
-            ImageIO.write(image, "png", output);
+            ImageIO.write(image, format, output);
             return output.toByteArray();
         } catch (Exception exception) {
             throw new IllegalStateException(exception);

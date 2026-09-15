@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { apiCommand, apiRequest, authMode, changePassword, clearAccessToken, demoFallbackEnabled, hasAccessToken, login } from './api/client'
 import { consumeLogoutEntry } from './app/logoutEntry'
 import { bootstrapAssignmentId, bootstrapAssignments, canLoadSecondaryResources } from './app/authBootstrap'
+import { validateLandscapeEvidence } from './app/imageEvidence'
 import {
   addWorkRecordSupplement,
   createWorkRecordDraft,
@@ -308,6 +309,7 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
   const [nextAction, setNextAction] = useState('')
   const [payload, setPayload] = useState<Record<string, WorkRecordFieldValue>>({})
   const [attachments, setAttachments] = useState<PendingWorkEvidence[]>([])
+  const [validatingAttachments, setValidatingAttachments] = useState(false)
   const [existing, setExisting] = useState<WorkRecordDetail>()
   const [loadingRecord, setLoadingRecord] = useState(Boolean(item.recordId))
   const [supplement, setSupplement] = useState('')
@@ -371,6 +373,22 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
     }
     if (!available) return
     setAttachments((current) => [...current, ...entries.slice(0, available)])
+  }
+  const appendValidatedAttachments = async (entries: PendingWorkEvidence[]) => {
+    if (!entries.length) return
+    setValidatingAttachments(true)
+    setMessage(undefined)
+    try {
+      const result = await validateLandscapeEvidence(entries)
+      if (result.accepted.length) appendAttachments(result.accepted)
+      if (result.rejected.length) {
+        const first = result.rejected[0]
+        const remaining = result.rejected.length - 1
+        setMessage(`${first.entry.file.name}：${first.reason}${remaining ? `；另有 ${remaining} 张照片未加入` : ''}`)
+      }
+    } finally {
+      setValidatingAttachments(false)
+    }
   }
   useEffect(() => {
     if (!item.recordId) return
@@ -542,7 +560,7 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
       : saveProgress?.phase === 'submit' ? '正在提交…' : '正在保存…'
     : item.status === 'FAILED' ? '重新提交' : '上传并提交'
   return <div className="modal-backdrop" role="presentation"><section className="modal work-record-modal" role="dialog" aria-modal="true">
-    <header><div><span className="panel-kicker">WORK RECORD · REAL API</span><h2>{item.title}</h2></div><button className="close" aria-label="关闭" disabled={!!saving} onClick={onClose}>×</button></header>
+    <header><div><span className="panel-kicker">WORK RECORD · REAL API</span><h2>{item.title}</h2></div><button className="close" aria-label="关闭" disabled={!!saving || validatingAttachments} onClick={onClose}>×</button></header>
     <div className="form-body"><div className="form-context"><strong>{item.formName ?? '岗位工作记录'}</strong><small>{item.formCode ?? '结构化表单'} · {policy.attachmentCountUnlimited ? `每个房号照片数量不限，整单安全上限 ${policy.maxAttachments} 个附件` : `最多 ${policy.maxAttachments} 个附件`} · 单文件 ≤ {Math.round(policy.maxFileSizeBytes / 1024 / 1024)}MB</small></div>
       {item.delegateAssignmentId && <div className="inline-warning">本事项已转交给 {item.delegatedEmployeeName ?? '指定员工'}{item.ownerResting ? '，店长今日休息' : ''}。</div>}
       {isOwner && item.executionPolicy?.delegationAllowed && !viewOnly && <section className="action-box"><label>转交本项工作<select value={delegateAssignmentId} onChange={(event) => setDelegateAssignmentId(event.target.value)}><option value="">请选择同店员工</option>{candidates.map((candidate) => <option value={candidate.assignmentId} key={candidate.assignmentId}>{candidate.employeeName} · {candidate.positionName}</option>)}</select></label><label className="checkbox-line"><input type="checkbox" checked={ownerResting} onChange={(event) => setOwnerResting(event.target.checked)} />店长今日休息</label><label>转交说明<input value={delegationReason} onChange={(event) => setDelegationReason(event.target.value)} placeholder="选填" /></label><div className="button-row"><button className="secondary" disabled={delegating || !delegateAssignmentId} onClick={() => void saveDelegation()}>{delegating ? '处理中…' : '确认转交'}</button>{item.delegateAssignmentId && <button className="secondary" disabled={delegating} onClick={() => void revokeDelegation()}>撤销转交</button>}</div></section>}
@@ -552,7 +570,7 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
       {!viewOnly && !loadingRecord && <>{item.status === 'FAILED' && <div className="inline-warning">上一版未通过，本次提交会生成新的尝试记录，不覆盖历史证据。</div>}{Object.values(properties).some((definition) => definition.type !== 'array') && <div className="dynamic-form">{Object.entries(properties).filter(([, definition]) => definition.type !== 'array').map(([key, definition]) => <label key={key}>{fieldLabels[key] ?? definition.title ?? key}{required.includes(key) ? ' *' : ''}{definition.type === 'boolean' ? <select value={String(payload[key] ?? '')} onChange={(event) => setPayload((current) => ({ ...current, [key]: event.target.value === 'true' }))}><option value="">请选择</option><option value="true">是</option><option value="false">否</option></select> : ['integer', 'number'].includes(definition.type ?? '') ? <input type="number" min={definition.minimum} max={definition.maximum} value={String(payload[key] ?? '')} onChange={(event) => setPayload((current) => ({ ...current, [key]: event.target.value === '' ? '' : Number(event.target.value) }))} /> : <textarea rows={3} value={String(payload[key] ?? '')} onChange={(event) => setPayload((current) => ({ ...current, [key]: event.target.value }))} />}{definition.description && <small>{definition.description}</small>}</label>)}</div>}
         <label>完成情况{policy.completionStatementRequired ? ' *' : ''}<textarea rows={4} value={completion} onChange={(event) => setCompletion(event.target.value)} placeholder="说明实际完成内容、结果和关键数据" /></label><label>异常与需协同事项{policy.exceptionStatementRequired ? ' *' : ''}<textarea rows={3} value={exception} onChange={(event) => setException(event.target.value)} placeholder="没有异常请填写“无”" /></label><label>下一步行动{policy.nextActionRequired ? ' *' : ''}<textarea rows={2} value={nextAction} onChange={(event) => setNextAction(event.target.value)} placeholder="需要继续跟进时填写" /></label>
         {!!activeRequirements.length && <section className="camera-evidence">
-          <div><strong>现场拍照</strong><small>照片上传后由服务端加盖门店、可信时间和证据编号水印{hasInstanceRequirements ? '；每个房号至少上传 1 张，可继续追加，照片数量不限' : `；楼层公区按本店 ${item.guestRoomFloorCount ?? 1} 层计算`}</small></div>
+          <div><strong>现场拍照</strong><small>所有照片必须横向拍摄（宽度大于高度）；上传后由服务端加盖门店、可信时间和证据编号水印{hasInstanceRequirements ? '；每个房号至少上传 1 张，可继续追加，照片数量不限' : `；楼层公区按本店 ${item.guestRoomFloorCount ?? 1} 层计算`}</small></div>
           {activeRequirements.map((requirement) => {
             if ((requirement.requiredInstances ?? 0) > 0 && requirement.instanceField) {
               return <section className="room-evidence-group" key={requirement.checkpointCode}>
@@ -564,19 +582,19 @@ function WorkRecordDialog({ item, identity, onClose, onSaved }: { item: WorkExpe
                   const photoCount = instanceKey ? storedCount + pendingCount : 0
                   return <article className={photoCount >= (requirement.minimumPerInstance ?? 1) ? 'room-evidence-card completed' : 'room-evidence-card'} key={`${requirement.checkpointCode}-${roomIndex}`}>
                     <label>{requirement.instanceLabel ?? '房号'} {roomIndex + 1} *<input value={roomNumber} maxLength={32} placeholder="例如 1208" onChange={(event) => updateInstanceValue(requirement, roomIndex, event.target.value)} onBlur={(event) => updateInstanceValue(requirement, roomIndex, normalizedInstanceKey(event.target.value))} /></label>
-                    <div><span>{photoCount} 张·数量不限</span><label className="room-photo-button"><input type="file" accept="image/*" capture="environment" multiple disabled={!instanceKey} onChange={(event) => { const selected = Array.from(event.target.files ?? []).map((file) => ({ file, captureSource: 'CAMERA' as const, checkpointCode: requirement.checkpointCode, evidenceInstanceKey: instanceKey, capturedAtClient: new Date().toISOString() })); appendAttachments(selected); event.currentTarget.value = '' }} />{photoCount ? '继续上传' : '拍照/上传'}</label></div>
+                    <div><span>{photoCount} 张·数量不限</span><label className="room-photo-button"><input type="file" accept="image/jpeg,image/png" capture="environment" multiple disabled={!instanceKey || validatingAttachments} onChange={(event) => { const selected = Array.from(event.target.files ?? []).map((file) => ({ file, captureSource: 'CAMERA' as const, checkpointCode: requirement.checkpointCode, evidenceInstanceKey: instanceKey, capturedAtClient: new Date().toISOString() })); void appendValidatedAttachments(selected); event.currentTarget.value = '' }} />{validatingAttachments ? '校验中…' : photoCount ? '继续上传' : '横向拍照'}</label></div>
                   </article>
                 })}</div>
               </section>
             }
             const minimum = requirementMinimum(requirement)
             const count = attachments.filter((entry) => entry.checkpointCode === requirement.checkpointCode && entry.captureSource === 'CAMERA').length + (existing?.status === 'DRAFT' ? existing.attachments.filter((entry) => entry.checkpointCode === requirement.checkpointCode && entry.captureSource === 'CAMERA').length : 0)
-            return <div className="camera-grid" key={requirement.checkpointCode}><label className={count >= minimum ? 'camera-checkpoint completed' : 'camera-checkpoint'}><span>{requirement.label}<small>{count}/{minimum} 张{requirement.recommendedMaximum ? `，建议不超过 ${requirement.recommendedMaximum}` : ''}</small></span><input type="file" accept="image/*" capture="environment" onChange={(event) => { const file = event.target.files?.[0]; if (file) appendAttachments([{ file, captureSource: 'CAMERA', checkpointCode: requirement.checkpointCode, capturedAtClient: new Date().toISOString() }]); event.currentTarget.value = '' }} /><b>{count >= minimum ? '已拍摄' : '打开相机'}</b></label></div>
+            return <div className="camera-grid" key={requirement.checkpointCode}><label className={count >= minimum ? 'camera-checkpoint completed' : 'camera-checkpoint'}><span>{requirement.label}<small>{count}/{minimum} 张{requirement.recommendedMaximum ? `，建议不超过 ${requirement.recommendedMaximum}` : ''}</small></span><input type="file" accept="image/jpeg,image/png" capture="environment" disabled={validatingAttachments} onChange={(event) => { const file = event.target.files?.[0]; if (file) void appendValidatedAttachments([{ file, captureSource: 'CAMERA', checkpointCode: requirement.checkpointCode, capturedAtClient: new Date().toISOString() }]); event.currentTarget.value = '' }} /><b>{validatingAttachments ? '校验中…' : count >= minimum ? '已拍摄' : '横向拍照'}</b></label></div>
           })}
         </section>}
-        <label className="attachment-picker">补充文件{policy.attachmentRequired ? ' *' : '（可选）'}<input type="file" multiple accept=".jpg,.jpeg,.png,.pdf,.docx,.xlsx" onChange={(event) => { const selected = Array.from(event.target.files ?? []).map((file) => ({ file, captureSource: 'FILE_PICKER' as const })); appendAttachments(selected); event.currentTarget.value = '' }} /><small>{attachments.length ? `待上传 ${attachments.length} 个：${attachments.map((entry) => entry.file.name).join('、')}` : '可追加图片、PDF、Word、Excel；保存草稿后上传，提交时再次校验证据'}</small></label>{!!attachments.length && <div className="pending-evidence-list">{attachments.map((entry, index) => <button type="button" className="secondary" key={`${entry.file.name}-${index}`} onClick={() => setAttachments((current) => current.filter((_, currentIndex) => currentIndex !== index))}>{entry.evidenceInstanceKey ? `房号 ${entry.evidenceInstanceKey}` : entry.checkpointCode ? '现场' : '文件'} · {entry.file.name} ×</button>)}</div>}</>}
+        <label className="attachment-picker">补充文件{policy.attachmentRequired ? ' *' : '（可选）'}<input type="file" multiple disabled={validatingAttachments} accept=".jpg,.jpeg,.png,.pdf,.docx,.xlsx" onChange={(event) => { const selected = Array.from(event.target.files ?? []).map((file) => ({ file, captureSource: 'FILE_PICKER' as const })); void appendValidatedAttachments(selected); event.currentTarget.value = '' }} /><small>{validatingAttachments ? '正在校验照片方向…' : attachments.length ? `待上传 ${attachments.length} 个：${attachments.map((entry) => entry.file.name).join('、')}` : '照片必须横向；可追加 JPG、PNG、PDF、Word、Excel，提交时服务端会再次校验'}</small></label>{!!attachments.length && <div className="pending-evidence-list">{attachments.map((entry, index) => <button type="button" className="secondary" key={`${entry.file.name}-${index}`} onClick={() => setAttachments((current) => current.filter((_, currentIndex) => currentIndex !== index))}>{entry.evidenceInstanceKey ? `房号 ${entry.evidenceInstanceKey}` : entry.checkpointCode ? '现场' : '文件'} · {entry.file.name} ×</button>)}</div>}</>}
       {!canSubmit && !viewOnly && <div className="inline-warning">此条接口数据尚未返回完整提交上下文；页面不会猜测任职或表单版本。</div>}{saveProgressText && <div className="work-save-progress" role="status" aria-live="polite"><strong>{saveProgressText}</strong>{saveProgress?.phase === 'upload' && <><progress value={saveProgress.completed} max={Math.max(1, saveProgress.total)} /><small>每个附件都要完成服务端安全扫描；已成功的附件会立即从待上传列表移除，失败后可断点重试。</small></>}</div>}{message && <div className="inline-error">{message}</div>}
-    </div><footer><button className="secondary" disabled={!!saving} onClick={onClose}>关闭</button>{!viewOnly && !loadingRecord && <><button className="secondary" disabled={!!saving} onClick={() => void persist(false)}>{saving === 'draft' ? saveProgress?.phase === 'upload' ? `上传 ${saveProgress.completed}/${saveProgress.total}` : '保存中…' : '保存草稿'}</button><button className="primary" disabled={!!saving} onClick={() => void persist(true)}>{submitButtonText}</button></>}</footer>
+    </div><footer><button className="secondary" disabled={!!saving || validatingAttachments} onClick={onClose}>关闭</button>{!viewOnly && !loadingRecord && <><button className="secondary" disabled={!!saving || validatingAttachments} onClick={() => void persist(false)}>{saving === 'draft' ? saveProgress?.phase === 'upload' ? `上传 ${saveProgress.completed}/${saveProgress.total}` : '保存中…' : '保存草稿'}</button><button className="primary" disabled={!!saving || validatingAttachments} onClick={() => void persist(true)}>{submitButtonText}</button></>}</footer>
   </section></div>
 }
 
@@ -735,6 +753,7 @@ function TaskDetail({ initial, identity, permissions, onClose, onChanged }: { in
   const [busy, setBusy] = useState<string>()
   const [error, setError] = useState<string>()
   const [evidenceFiles, setEvidenceFiles] = useState<File[]>([])
+  const [validatingEvidence, setValidatingEvidence] = useState(false)
   const isAssignee = Boolean(identity.businessActorAssignmentId && identity.businessActorAssignmentId === task.assigneeAssignmentId)
   const isReviewer = Boolean(identity.businessActorAssignmentId && identity.businessActorAssignmentId === task.reviewerAssignmentId)
   const canEditEvidence = Boolean(identity.businessActorAssignmentId && identity.businessActorAssignmentId === task.assigneeAssignmentId && ['IN_PROGRESS', 'REWORK'].includes(task.status))
@@ -772,6 +791,21 @@ function TaskDetail({ initial, identity, permissions, onClose, onChanged }: { in
     } catch (reason) { setError(reason instanceof Error ? reason.message : '执行证据上传失败') }
     finally { setBusy(undefined) }
   }
+  const selectEvidenceFiles = async (files: File[]) => {
+    setValidatingEvidence(true)
+    setError(undefined)
+    try {
+      const result = await validateLandscapeEvidence(files.slice(0, 10).map((file) => ({ file })))
+      setEvidenceFiles(result.accepted.map((entry) => entry.file))
+      if (result.rejected.length) {
+        const first = result.rejected[0]
+        const remaining = result.rejected.length - 1
+        setError(`${first.entry.file.name}：${first.reason}${remaining ? `；另有 ${remaining} 张照片未加入` : ''}`)
+      }
+    } finally {
+      setValidatingEvidence(false)
+    }
+  }
   const previewEvidence = async (evidenceId: string) => {
     try { const blob = await loadTaskEvidenceContent(identity, task.id, evidenceId); window.open(URL.createObjectURL(blob), '_blank', 'noopener,noreferrer') }
     catch (reason) { setError(reason instanceof Error ? reason.message : '执行证据打开失败') }
@@ -788,8 +822,8 @@ function TaskDetail({ initial, identity, permissions, onClose, onChanged }: { in
     <div className="drawer-body"><div className="task-summary"><span><small>任务状态</small><Status value={task.status} /></span><span><small>SLA状态</small><Status value={task.slaStatus} /></span><span><small>优先级</small><Status value={task.priority} /></span></div>
       <dl><div><dt>目标组织</dt><dd>{task.targetOrgName}</dd></div><div><dt>负责人</dt><dd>{task.assigneeName}</dd></div><div><dt>验收人</dt><dd>{task.reviewerName}</dd></div><div><dt>截止时间</dt><dd>{formatDate(task.dueAt)}</dd></div><div><dt>来源</dt><dd>{task.creationSource ? label(task.creationSource) : task.sourceTitle ?? label(task.sourceType)}</dd></div></dl>
       <section className="detail-section"><h3>执行要求</h3><p>{task.description ?? '任务来源已记录，执行结果需提交结构化说明和证据。'}</p></section>
-      <section className="detail-section"><h3>执行证据</h3>{task.evidence?.length ? <div className="attachment-list">{task.evidence.map((evidence) => <span className="evidence-chip" key={evidence.id}><button className="secondary" disabled={!evidence.objectKey} onClick={() => void previewEvidence(evidence.id)}>{evidence.originalName || label(evidence.evidenceType)} · {evidence.scanStatus}</button>{canEditEvidence && evidence.submittedByAssignmentId === identity.businessActorAssignmentId && <button className="text-action danger" disabled={busy === `delete:${evidence.id}`} onClick={() => void removeEvidence(evidence.id)}>删除</button>}</span>)}</div> : <p className="muted">尚未上传图片或文档证据。</p>}{canEditEvidence && <div className="evidence-uploader"><input type="file" multiple accept=".jpg,.jpeg,.png,.pdf,.docx,.xlsx" onChange={(event) => setEvidenceFiles(Array.from(event.target.files ?? []).slice(0, 10))} /><button className="secondary" disabled={!!busy || !evidenceFiles.length} onClick={() => void uploadEvidence()}>{busy === 'upload-evidence' ? '上传中…' : `上传证据${evidenceFiles.length ? `（${evidenceFiles.length}）` : ''}`}</button><small>支持图片、PDF、Word、Excel；单文件不超过20MB。</small></div>}</section>
-      {!!allowedActions.length && <section className="action-box"><label>处理说明<textarea rows={3} value={remark} onChange={(event) => setRemark(event.target.value)} placeholder="填写执行结果、验收意见或返工原因" /></label>{error && <div className="inline-error">{error}</div>}<div>{allowedActions.map((action) => <button className={action.tone === 'danger' ? 'danger-button' : 'primary'} disabled={!!busy || !remark.trim()} onClick={() => run(action.command)} key={action.command}>{busy === action.command ? '处理中…' : action.label}</button>)}</div></section>}
+      <section className="detail-section"><h3>执行证据</h3>{task.evidence?.length ? <div className="attachment-list">{task.evidence.map((evidence) => <span className="evidence-chip" key={evidence.id}><button className="secondary" disabled={!evidence.objectKey} onClick={() => void previewEvidence(evidence.id)}>{evidence.originalName || label(evidence.evidenceType)} · {evidence.scanStatus}</button>{canEditEvidence && evidence.submittedByAssignmentId === identity.businessActorAssignmentId && <button className="text-action danger" disabled={busy === `delete:${evidence.id}`} onClick={() => void removeEvidence(evidence.id)}>删除</button>}</span>)}</div> : <p className="muted">尚未上传图片或文档证据。</p>}{canEditEvidence && <div className="evidence-uploader"><input type="file" multiple disabled={validatingEvidence} accept=".jpg,.jpeg,.png,.pdf,.docx,.xlsx" onChange={(event) => { void selectEvidenceFiles(Array.from(event.target.files ?? [])); event.currentTarget.value = '' }} /><button className="secondary" disabled={!!busy || validatingEvidence || !evidenceFiles.length} onClick={() => void uploadEvidence()}>{validatingEvidence ? '校验方向中…' : busy === 'upload-evidence' ? '上传中…' : `上传证据${evidenceFiles.length ? `（${evidenceFiles.length}）` : ''}`}</button><small>照片必须横向；支持 JPG、PNG、PDF、Word、Excel，单文件不超过20MB。</small></div>}{error && <div className="inline-error">{error}</div>}</section>
+      {!!allowedActions.length && <section className="action-box"><label>处理说明<textarea rows={3} value={remark} onChange={(event) => setRemark(event.target.value)} placeholder="填写执行结果、验收意见或返工原因" /></label><div>{allowedActions.map((action) => <button className={action.tone === 'danger' ? 'danger-button' : 'primary'} disabled={!!busy || !remark.trim()} onClick={() => run(action.command)} key={action.command}>{busy === action.command ? '处理中…' : action.label}</button>)}</div></section>}
       {task.status === 'RESULT_SUBMITTED' && task.standardVersionId && isReviewer && permissions.includes('evaluation.manual-review') && <section className="action-box"><h3>任务结果标准评价</h3><p className="muted">系统使用任务创建时冻结的标准版本评价执行结果；评价完成后任务进入待验收状态。</p>{error && <div className="inline-error">{error}</div>}<div><button className="primary" disabled={!!busy} onClick={evaluateResult}>{busy === 'evaluate-result' ? '评价中…' : '按绑定标准评价结果'}</button></div></section>}
       <section className="detail-section"><h3>不可变时间线</h3><div className="timeline">{task.timeline?.length ? task.timeline.map((item) => <div key={item.id}><i /><span><strong>{label(item.toStatus)}</strong><small>{item.actorName} · {formatDate(item.occurredAt)}</small>{item.remark && <p>{item.remark}</p>}</span></div>) : <p className="muted">暂无流转记录。</p>}</div></section>
     </div>

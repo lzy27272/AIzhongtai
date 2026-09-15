@@ -18,6 +18,6 @@ test('successfully uploaded evidence leaves the pending queue for retry safety',
 })
 
 test('work record cannot be closed while save or upload is active', () => {
-  assert.match(source, /aria-label="关闭" disabled=\{!!saving\}/)
-  assert.match(source, /<button className="secondary" disabled=\{!!saving\} onClick=\{onClose\}>关闭<\/button>/)
+  assert.match(source, /aria-label="关闭" disabled=\{!!saving \|\| validatingAttachments\}/)
+  assert.match(source, /<button className="secondary" disabled=\{!!saving \|\| validatingAttachments\} onClick=\{onClose\}>关闭<\/button>/)
 })
