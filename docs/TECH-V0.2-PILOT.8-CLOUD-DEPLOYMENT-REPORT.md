@@ -109,3 +109,13 @@ Browser插件不可用，且Playwright自带Chromium未安装；遵循前端测�
 - 生产数据验证：绑定巡检已将多岗位账号`xiajun`和`sfglzy777`恢复为`ACTIVE`，清除`MULTIPLE_ACTIVE_ASSIGNMENTS`原因与岗位选择标记，并保留各自有效默认任职；永久删除账号仍维持REVOKED，不受本次恢复逻辑影响。
 - 公网与Browser验证：无参数OAuth回调返回302企业微信授权跳转，使用no-store策略、响应体为空且无`Content-Disposition`；`/wecom-auth`显示“无法安全打开中台”和明确凭证错误，页面无框架错误层，控制台错误/警告为0；“返回中台登录”可正常进入`/#/`登录页。真实企业微信授权码交换需由员工在企业微信客户端重新打开工作台完成最终复验。
 - 后端专项43项、全量256项（0失败、0错误、3跳过）及Flyway V1→V49通过。本次仍为内部Pilot增量发布，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态。
+
+## 11. 2026-09-15 工作台任务下达与完成率分层看板
+
+- 功能提交为`226c084339bbc889a0c7147079e865cc7b3eb839`，已快进合并并推送至GitHub`lzy27272/AIzhongtai:main`。工作台新增直接打开正式任务创建流程的“一键下达任务”；完成率汇总增加门店、部门和员工层级的当日/月度完成率、待提交与逾期数据。
+- Flyway V53为集团副总经理角色及现有集团岗位功能方案补齐`task.create`和`task.dispatch`，实际任务目标继续由既有服务端租户、组织树及门店范围策略裁剪。生产只读核验显示1个租户角色和2个已发布/草稿岗位方案版本同时具备两项权限。
+- 云端不可变发布版本为`20260915-pilot8-226c084`。后端JAR SHA-256为`9f18b2eede9faa6706e8eb864425eea674f53ada4cbb69350940be3b31aec684`；Web ZIP SHA-256为`46ae6d24888b6c18bca6cc88d5005d8aee771a67e9866984fcc7bfb94d7598a0`；Web `index.html` SHA-256为`d536e400417ee5fb70b19e95d61eae096264d9b34045d15bc29954583f2ce772`，服务器与公网回读一致。
+- 部署前生成加密PostgreSQL备份`hotel_ai_os-auto-20260915T092035+0800.dump.enc`，备份任务返回成功，密文及校验文件均为`root:root:0600`。Flyway JAR/数据库均为V53，失败迁移0。
+- Core API与Caddy均为`active`，健康状态为`UP`；公网首页返回200，未授权`/api/v1/iam/me`返回401，部署后10分钟Core API warning为0。发布脚本保留旧Core/Web软链接并启用失败自动回滚，本次未触发回滚。
+- 验证：Web 102项测试、TypeScript及Pilot生产构建通过；后端集团副总权限迁移与店长分层汇总专项4项通过，完整Flyway V1→V53迁移和生产JAR构建通过。Codex内置浏览器访问线上页面连续超时，因此本轮未完成登录后真实业务账号交互验收，也未改用未经授权的浏览器替代；真实集团副总账号的按钮与下钻数据仍需业务侧复验。
+- 本次仍为内部Pilot增量发布，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态。
