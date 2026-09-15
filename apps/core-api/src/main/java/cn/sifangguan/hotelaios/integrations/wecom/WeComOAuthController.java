@@ -1,5 +1,6 @@
 package cn.sifangguan.hotelaios.integrations.wecom;
 
+import cn.sifangguan.hotelaios.shared.security.FederatedSessionCookie;
 import jakarta.validation.Valid;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
@@ -99,7 +100,11 @@ public class WeComOAuthController {
     public ResponseEntity<WeComOAuthModels.ExchangeResponse> exchange(
             @Valid @RequestBody WeComOAuthModels.ExchangeRequest request
     ) {
-        return noStore(ResponseEntity.ok()).body(service.exchange(request.exchangeCode()));
+        WeComOAuthModels.ExchangeResponse session = service.exchange(request.exchangeCode());
+        return noStore(ResponseEntity.ok())
+                .header(HttpHeaders.SET_COOKIE,
+                        FederatedSessionCookie.create(session.accessToken(), session.expiresAt()).toString())
+                .body(session);
     }
 
     private static ResponseCookie verifierCookie(String value, long maxAgeSeconds) {

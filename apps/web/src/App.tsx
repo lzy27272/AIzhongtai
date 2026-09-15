@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { apiCommand, apiRequest, authMode, changePassword, clearAccessToken, demoFallbackEnabled, hasAccessToken, login } from './api/client'
+import { apiCommand, apiRequest, authMode, changePassword, clearAccessToken, demoFallbackEnabled, hasAccessToken, login, logout } from './api/client'
 import { consumeLogoutEntry } from './app/logoutEntry'
 import { bootstrapAssignmentId, bootstrapAssignments, canLoadSecondaryResources } from './app/authBootstrap'
 import { validateLandscapeEvidence } from './app/imageEvidence'
@@ -1354,5 +1354,5 @@ export default function App() {
     }}
   />
   if (!authenticated) return <LoginPage onAuthenticated={() => setAuthenticated(true)} />
-  return <AuthenticatedApp onLogout={() => { clearAccessToken(); setAuthenticated(false) }} />
+  return <AuthenticatedApp onLogout={() => { void logout(); setAuthenticated(false) }} />
 }

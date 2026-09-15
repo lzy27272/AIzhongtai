@@ -6,6 +6,8 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.net.URI;
+import java.time.OffsetDateTime;
+import java.util.UUID;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItem;
@@ -14,10 +16,38 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.http.MediaType.APPLICATION_JSON;
 
 class WeComOAuthControllerTest {
+    @Test
+    void exchangeEstablishesPersistentHttpOnlyWeComSessionCookie() throws Exception {
+        WeComOAuthService service = mock(WeComOAuthService.class);
+        WeComBindingEnrollmentService enrollmentService = mock(WeComBindingEnrollmentService.class);
+        UUID accountId = UUID.randomUUID();
+        when(service.exchange("one-time-exchange-code"))
+                .thenReturn(new WeComOAuthModels.ExchangeResponse(
+                        "signed.jwt.value", "Bearer", OffsetDateTime.now().plusMinutes(30),
+                        accountId, "Employee", "#/workbench"));
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new WeComOAuthController(service, enrollmentService)).build();
+
+        mvc.perform(post("/api/v1/integrations/wecom/oauth/exchange")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"exchangeCode\":\"one-time-exchange-code\"}"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(APPLICATION_JSON))
+                .andExpect(header().string("Set-Cookie", containsString(
+                        "__Host-hotel_ai_wecom_session=signed.jwt.value")))
+                .andExpect(header().string("Set-Cookie", containsString("Path=/")))
+                .andExpect(header().string("Set-Cookie", containsString("Secure")))
+                .andExpect(header().string("Set-Cookie", containsString("HttpOnly")))
+                .andExpect(header().string("Set-Cookie", containsString("SameSite=Lax")))
+                .andExpect(header().string("Cache-Control", "no-store, private"));
+    }
+
     @Test
     void startBindsBrowserWithHostOnlySecureCookieAndNoStore() throws Exception {
         WeComOAuthService service = mock(WeComOAuthService.class);

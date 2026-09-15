@@ -64,6 +64,7 @@ public class TenantContextFilter extends OncePerRequestFilter {
     protected boolean shouldNotFilter(HttpServletRequest request) {
         return request.getRequestURI().startsWith("/actuator/")
                 || request.getRequestURI().equals("/api/v1/auth/login")
+                || request.getRequestURI().equals("/api/v1/auth/logout")
                 || isAnonymousWeComEndpoint(request)
                 || HttpMethod.OPTIONS.matches(request.getMethod());
     }

@@ -1,5 +1,6 @@
 package cn.sifangguan.hotelaios.auth;
 
+import cn.sifangguan.hotelaios.shared.security.FederatedSessionCookie;
 import jakarta.validation.Valid;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -8,6 +9,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
 
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -28,5 +31,13 @@ public class PilotAuthController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void changePassword(@Valid @RequestBody PilotAuthModels.ChangePasswordRequest request) {
         service.changePassword(request);
+    }
+
+    @PostMapping("/logout")
+    public ResponseEntity<Void> logout() {
+        return ResponseEntity.noContent()
+                .header(HttpHeaders.SET_COOKIE, FederatedSessionCookie.clear().toString())
+                .header(HttpHeaders.CACHE_CONTROL, "no-store, private")
+                .build();
     }
 }

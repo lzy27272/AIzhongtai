@@ -57,21 +57,59 @@ export type LoginResponse = {
 export function hasAccessToken(): boolean {
   // Internal account/password sessions intentionally live only in memory. A refresh,
   // reopened tab, or new browser session must always return to the login screen.
-  window.localStorage.removeItem(UAT_ACCESS_TOKEN_STORAGE_KEY)
+  try { window.localStorage.removeItem(UAT_ACCESS_TOKEN_STORAGE_KEY) } catch { /* storage may be disabled */ }
   if (ephemeralAccessToken) return true
+  try {
+    const raw = window.localStorage.getItem(FEDERATED_SESSION_STORAGE_KEY)
+    if (raw) {
+      const marker = JSON.parse(raw) as { version?: number; source?: string; expiresAt?: string }
+      const expiresAt = marker.expiresAt ? Date.parse(marker.expiresAt) : Number.NaN
+      if (marker.version === 1 && marker.source === 'wecom'
+        && Number.isFinite(expiresAt) && expiresAt > Date.now()) return true
+      window.localStorage.removeItem(FEDERATED_SESSION_STORAGE_KEY)
+    }
+  } catch { /* fall through to the page-scoped compatibility marker */ }
   try { return window.sessionStorage.getItem(FEDERATED_SESSION_STORAGE_KEY) === 'wecom' } catch { return false }
 }
 
 export function clearAccessToken(): void {
   ephemeralAccessToken = undefined
-  window.localStorage.removeItem(UAT_ACCESS_TOKEN_STORAGE_KEY)
+  try {
+    window.localStorage.removeItem(UAT_ACCESS_TOKEN_STORAGE_KEY)
+    window.localStorage.removeItem(FEDERATED_SESSION_STORAGE_KEY)
+  } catch { /* storage may be disabled */ }
   try { window.sessionStorage.removeItem(FEDERATED_SESSION_STORAGE_KEY) } catch { /* storage may be disabled */ }
 }
 
-export function establishFederatedSession(accessToken?: string): void {
+export function establishFederatedSession(accessToken?: string, expiresAt?: string): void {
   ephemeralAccessToken = accessToken || undefined
-  window.localStorage.removeItem(UAT_ACCESS_TOKEN_STORAGE_KEY)
-  try { window.sessionStorage.setItem(FEDERATED_SESSION_STORAGE_KEY, 'wecom') } catch { /* HttpOnly cookie can still carry the session */ }
+  try { window.localStorage.removeItem(UAT_ACCESS_TOKEN_STORAGE_KEY) } catch { /* storage may be disabled */ }
+  const expiry = expiresAt ? Date.parse(expiresAt) : Number.NaN
+  if (Number.isFinite(expiry) && expiry > Date.now()) {
+    try {
+      window.localStorage.setItem(FEDERATED_SESSION_STORAGE_KEY, JSON.stringify({
+        version: 1,
+        source: 'wecom',
+        expiresAt,
+      }))
+      window.sessionStorage.removeItem(FEDERATED_SESSION_STORAGE_KEY)
+      return
+    } catch { /* use the page-scoped compatibility marker below */ }
+  }
+  try {
+    window.sessionStorage.setItem(FEDERATED_SESSION_STORAGE_KEY, 'wecom')
+  } catch {
+    // The HttpOnly cookie still carries authentication; storage is only a rendering hint.
+  }
+}
+
+export async function logout(): Promise<void> {
+  clearAccessToken()
+  await fetch(`${API_BASE}/auth/logout`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { Accept: 'application/json', 'X-Correlation-Id': crypto.randomUUID() },
+  }).catch(() => undefined)
 }
 
 export async function login(loginName: string, password: string): Promise<LoginResponse> {

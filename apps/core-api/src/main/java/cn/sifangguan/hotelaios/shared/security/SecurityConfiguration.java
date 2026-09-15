@@ -21,16 +21,27 @@ import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
+import org.springframework.security.oauth2.server.resource.web.BearerTokenResolver;
+import org.springframework.security.oauth2.server.resource.web.DefaultBearerTokenResolver;
 import org.springframework.security.web.SecurityFilterChain;
 
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Set;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
 @Configuration
 public class SecurityConfiguration {
+    private static final Set<String> COOKIE_ANONYMOUS_PATHS = Set.of(
+            "/api/v1/auth/login",
+            "/api/v1/auth/logout",
+            "/api/v1/integrations/wecom/oauth/start",
+            "/api/v1/integrations/wecom/oauth/callback",
+            "/api/v1/integrations/wecom/oauth/exchange"
+    );
+
     @Bean
     @ConditionalOnProperty(name = "app.security.development-header-auth-enabled", havingValue = "true")
     SecurityFilterChain developmentSecurity(HttpSecurity http) throws Exception {
@@ -50,6 +61,7 @@ public class SecurityConfiguration {
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/logout").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/integrations/wecom/bot/callback").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/integrations/wecom/bot/callback").permitAll()
                         .requestMatchers(HttpMethod.GET,
@@ -71,6 +83,7 @@ public class SecurityConfiguration {
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2
+                        .bearerTokenResolver(federatedCookieBearerTokenResolver())
                         .jwt(Customizer.withDefaults())
                         .authenticationEntryPoint((request, response, exception) -> writeUnauthorized(response)))
                 .build();
@@ -123,6 +136,24 @@ public class SecurityConfiguration {
     @ConditionalOnProperty(name = "app.security.local-login.enabled", havingValue = "true")
     JwtEncoder localJwtEncoder(@Value("${app.security.local-login.secret:}") String localSecret) {
         return new NimbusJwtEncoder(new ImmutableSecret<>(localSecret(localSecret)));
+    }
+
+    @Bean
+    BearerTokenResolver federatedCookieBearerTokenResolver() {
+        DefaultBearerTokenResolver authorizationHeader = new DefaultBearerTokenResolver();
+        return request -> {
+            String headerToken = authorizationHeader.resolve(request);
+            if (headerToken != null) return headerToken;
+            if (COOKIE_ANONYMOUS_PATHS.contains(request.getRequestURI())) return null;
+            if (request.getCookies() == null) return null;
+            for (var cookie : request.getCookies()) {
+                if (FederatedSessionCookie.NAME.equals(cookie.getName())
+                        && cookie.getValue() != null && !cookie.getValue().isBlank()) {
+                    return cookie.getValue();
+                }
+            }
+            return null;
+        };
     }
 
     private HttpSecurity common(HttpSecurity http) throws Exception {

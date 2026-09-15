@@ -13,6 +13,7 @@ type WecomSessionResponse = {
 
 export type WecomExchangeResult = {
   accessToken?: string
+  expiresAt?: string
   returnTo?: string
 }
 
@@ -53,7 +54,7 @@ async function performExchange(code: string): Promise<WecomExchangeResult> {
     throw new ApiError(502, '服务端未确认企微会话已经建立，系统未进入任务页面。')
   }
 
-  return { accessToken: session.accessToken, returnTo: session.returnTo }
+  return { accessToken: session.accessToken, expiresAt: session.expiresAt, returnTo: session.returnTo }
 }
 
 export function exchangeWecomCode(code: string): Promise<WecomExchangeResult> {

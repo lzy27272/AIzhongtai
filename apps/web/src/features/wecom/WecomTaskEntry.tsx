@@ -20,7 +20,7 @@ export function WecomTaskEntryPage({ entry, onAuthenticated, onCancel }: Props) 
       .then((session) => {
         if (!active) return
         const target = safeTaskDeepLink(session.returnTo)
-        establishFederatedSession(session.accessToken)
+        establishFederatedSession(session.accessToken, session.expiresAt)
         window.history.replaceState(null, '', buildAppHashLocation(target, import.meta.env.BASE_URL))
         onAuthenticated()
       })
