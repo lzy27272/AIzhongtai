@@ -262,17 +262,20 @@ export async function loadExpectation(identity: ApiIdentity, id: string, fallbac
   return withFallback(async () => normalizeExpectation(object(await apiRequest<unknown>(`/work-expectations/${id}`, identity))), fallback)
 }
 
-export async function loadMyWork(identity: ApiIdentity) {
+export async function loadMyWork(identity: ApiIdentity, businessDate?: string) {
   return withFallback(async () => {
-    const payload = await apiRequest<unknown>('/my/work-expectations?page=0&size=100', identity)
+    const query = new URLSearchParams({ page: '0', size: '100' })
+    if (businessDate) query.set('businessDate', businessDate)
+    const payload = await apiRequest<unknown>(`/my/work-expectations?${query.toString()}`, identity)
     return asList<JsonObject>(payload).map(normalizeExpectation)
   }, () => demoValue<WorkExpectation[]>('demoExpectations'))
 }
 
-export async function loadTeamWork(identity: ApiIdentity, options: { orgUnitId?: string } = {}) {
+export async function loadTeamWork(identity: ApiIdentity, options: { orgUnitId?: string; businessDate?: string } = {}) {
   return withFallback(async () => {
     const query = new URLSearchParams({ page: '0', size: '100' })
     if (options.orgUnitId) query.set('targetOrgUnitId', options.orgUnitId)
+    if (options.businessDate) query.set('businessDate', options.businessDate)
     const endpoint = options.orgUnitId ? '/work-expectations' : '/team/work-expectations'
     const payload = await apiRequest<unknown>(`${endpoint}?${query.toString()}`, identity)
     return asList<JsonObject>(payload).map(normalizeExpectation)

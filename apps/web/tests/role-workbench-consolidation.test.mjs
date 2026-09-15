@@ -4,6 +4,8 @@ import test from 'node:test'
 
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const workbench = readFileSync(new URL('../src/features/workbench/RoleWorkbench.tsx', import.meta.url), 'utf8')
+const resources = readFileSync(new URL('../src/api/resources.ts', import.meta.url), 'utf8')
+const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
 const taskPages = readFileSync(new URL('../src/Pilot6Pages.tsx', import.meta.url), 'utf8')
 const mobile = readFileSync(new URL('../src/app/rolePresentationPolicy.ts', import.meta.url), 'utf8')
 const workPackageService = readFileSync(new URL('../../core-api/src/main/java/cn/sifangguan/hotelaios/workpackage/WorkPackageService.java', import.meta.url), 'utf8')
@@ -64,6 +66,24 @@ test('daily and month-to-date completion rates use the KPI on-time formula', () 
   assert.match(workPackageService, /teamWorkbenchSummary/)
   assert.match(workPackageService, /onTimeCompleted \* 100\.0 \/ expected/)
   assert.match(workPackageService, /first_record\.submitted_at/)
+})
+
+test('workbench pins requests to the reactive Shanghai business date', () => {
+  const currentScope = workbench.slice(workbench.indexOf('function currentScopeWork'), workbench.indexOf('function hotelIdFor'))
+  assert.match(workbench, /timeZone: 'Asia\/Shanghai'/)
+  assert.match(workbench, /role-workbench-work:\$\{canReadTeam\}:\$\{canReadOwn\}:\$\{currentBusinessDate\}/)
+  assert.match(workbench, /loadTeamWork\(identity, \{ businessDate: currentBusinessDate \}\)/)
+  assert.match(workbench, /loadWorkbenchSummary\(identity, currentBusinessDate\)/)
+  assert.match(workbench, /visibilitychange/)
+  assert.match(resources, /query\.set\('businessDate', options\.businessDate\)/)
+  assert.match(resources, /if \(businessDate\) query\.set\('businessDate', businessDate\)/)
+  assert.doesNotMatch(currentScope, /isLateSubmitted/)
+})
+
+test('wide hotel details expose a keyboard-accessible horizontal scroll region', () => {
+  assert.match(workbench, /className="workbench-detail-scroll" role="region" tabIndex=\{0\}/)
+  assert.match(styles, /\.workbench-hotel-table,\.workbench-detail-scroll \{ overflow-x: auto;/)
+  assert.match(styles, /\.workbench-detail-grid \{ min-width: 1080px;/)
 })
 
 test('mobile main tabs no longer expose task and notification centers', () => {

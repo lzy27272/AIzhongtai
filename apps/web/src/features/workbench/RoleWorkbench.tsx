@@ -50,8 +50,7 @@ function businessDate() {
   return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date())
 }
 
-function emptySummary(): WorkbenchSummary {
-  const today = businessDate()
+function emptySummary(today = businessDate()): WorkbenchSummary {
   return {
     asOfDate: today,
     monthStart: `${today.slice(0, 8)}01`,
@@ -82,10 +81,9 @@ export function isLateSubmitted(item: WorkExpectation) {
   return Number.isFinite(submitted) && Number.isFinite(due) && submitted > due
 }
 
-function currentScopeWork(items: WorkExpectation[]) {
-  const today = businessDate()
+function currentScopeWork(items: WorkExpectation[], today: string) {
   return items.filter((item) => !excludedStatuses.has(item.status)
-    && (!isDaily(item) || item.businessDate === today || isLateSubmitted(item)))
+    && (!isDaily(item) || item.businessDate === today))
 }
 
 function hotelIdFor(item: WorkExpectation) {
@@ -106,8 +104,7 @@ function countByStatus(items: WorkExpectation[]) {
   }, { COMPLETED: 0, PENDING: 0, OVERDUE: 0, LATE_SUBMITTED: 0 })
 }
 
-function completionFromItems(items: WorkExpectation[], monthToDate = false): WorkCompletionMetric {
-  const today = businessDate()
+function completionFromItems(items: WorkExpectation[], monthToDate = false, today = businessDate()): WorkCompletionMetric {
   const month = today.slice(0, 7)
   const scoped = items.filter((item) => !excludedStatuses.has(item.status)
     && (monthToDate ? item.businessDate.startsWith(month) && item.businessDate <= today : item.businessDate === today))
@@ -169,7 +166,7 @@ function SummaryTable({ title, subtitle, rows }: { title: string; subtitle: stri
   </section>
 }
 
-function aggregate(items: WorkExpectation[], key: (item: WorkExpectation) => string) {
+function aggregate(items: WorkExpectation[], key: (item: WorkExpectation) => string, today: string) {
   const groups = new Map<string, WorkExpectation[]>()
   items.forEach((item) => {
     const name = key(item)
@@ -180,8 +177,8 @@ function aggregate(items: WorkExpectation[], key: (item: WorkExpectation) => str
   return [...groups.entries()].map(([name, scoped]) => ({
     id: name,
     name,
-    today: completionFromItems(scoped),
-    monthToDate: completionFromItems(scoped, true),
+    today: completionFromItems(scoped, false, today),
+    monthToDate: completionFromItems(scoped, true, today),
   })).sort((left, right) => right.today.overdue - left.today.overdue
     || right.today.expected - left.today.expected)
 }
@@ -243,12 +240,13 @@ export function RoleWorkbench({
   const canReadDailyOperations = allows(permissions, permissionCodes.dailyOperations.readHotel) || allows(permissions, permissionCodes.dailyOperations.readCrossHotel)
   const canReadKpi = allows(permissions, permissionCodes.kpi.scorecardReadOwn) || allows(permissions, permissionCodes.kpi.scorecardReadTeam) || allows(permissions, permissionCodes.kpi.scorecardReadAll) || allows(permissions, permissionCodes.kpi.templateRead)
   const executive = executiveKeys.has(presentationKey)
-  const work = useResource(`${identity.key}:role-workbench-work:${canReadTeam}:${canReadOwn}`, () => canReadTeam
-    ? loadTeamWork(identity)
-    : canReadOwn ? loadMyWork(identity) : Promise.resolve({ data: [], source: 'api' as const }), [], 30_000)
-  const completion = useResource<WorkbenchSummary>(`${identity.key}:role-workbench-completion:${canReadTeam}`, () => canReadTeam
-    ? loadWorkbenchSummary(identity)
-    : Promise.resolve({ data: emptySummary(), source: 'api' as const }), emptySummary(), 60_000)
+  const [currentBusinessDate, setCurrentBusinessDate] = useState(businessDate)
+  const work = useResource(`${identity.key}:role-workbench-work:${canReadTeam}:${canReadOwn}:${currentBusinessDate}`, () => canReadTeam
+    ? loadTeamWork(identity, { businessDate: currentBusinessDate })
+    : canReadOwn ? loadMyWork(identity, currentBusinessDate) : Promise.resolve({ data: [], source: 'api' as const }), [], 30_000)
+  const completion = useResource<WorkbenchSummary>(`${identity.key}:role-workbench-completion:${canReadTeam}:${currentBusinessDate}`, () => canReadTeam
+    ? loadWorkbenchSummary(identity, currentBusinessDate)
+    : Promise.resolve({ data: emptySummary(currentBusinessDate), source: 'api' as const }), emptySummary(currentBusinessDate), 60_000)
   const tasks = useResource(`${identity.key}:role-workbench-tasks:${canReadTasks}`, () => canReadTasks && presentationKey !== 'GROUP_CHAIRMAN'
     ? loadTasks(identity, { view: hasAssignment ? 'mine' : 'team' })
     : Promise.resolve({ data: [], source: 'api' as const }), [], 30_000)
@@ -268,7 +266,7 @@ export function RoleWorkbench({
   }, [], 60_000)
   const [selected, setSelected] = useState<WorkExpectation>()
   const [creatingTask, setCreatingTask] = useState(false)
-  const scopedWork = useMemo(() => currentScopeWork(work.data), [work.data])
+  const scopedWork = useMemo(() => currentScopeWork(work.data, currentBusinessDate), [currentBusinessDate, work.data])
   const derivedHotels = useMemo(() => {
     const result = new Map<string, HotelRow>()
     scopedWork.forEach((item) => {
@@ -307,38 +305,56 @@ export function RoleWorkbench({
   const selectedHotelAllItems = useMemo(() => selectedHotel
     ? work.data.filter((item) => hotelIdFor(item) === selectedHotel.id)
     : work.data, [selectedHotel, work.data])
-  const personalWork = useMemo(() => scopedWork.filter((item) => item.businessDate === businessDate()
-    && (!identity.businessActorAssignmentId || item.assignmentId === identity.businessActorAssignmentId)), [identity.businessActorAssignmentId, scopedWork])
-  const summaryHotel = selectedHotel ? completion.data.hotels.find((hotel) => hotel.id === selectedHotel.id) : undefined
+  const personalWork = useMemo(() => scopedWork.filter((item) => item.businessDate === currentBusinessDate
+    && (!identity.businessActorAssignmentId || item.assignmentId === identity.businessActorAssignmentId)), [currentBusinessDate, identity.businessActorAssignmentId, scopedWork])
+  const completionData = completion.data.asOfDate === currentBusinessDate ? completion.data : emptySummary(currentBusinessDate)
+  const completionLoading = completion.loading || completion.data.asOfDate !== currentBusinessDate
+  const summaryHotel = selectedHotel ? completionData.hotels.find((hotel) => hotel.id === selectedHotel.id) : undefined
   const departmentRows = useMemo<SummaryRow[]>(() => {
     if (summaryHotel?.departments.length) return summaryHotel.departments
-    if (selectedHotel) return aggregate(selectedHotelAllItems, departmentLabel)
-    const rows = completion.data.hotels.flatMap((hotel) => hotel.departments.map((department) => ({
+    if (selectedHotel) return aggregate(selectedHotelAllItems, departmentLabel, currentBusinessDate)
+    const rows = completionData.hotels.flatMap((hotel) => hotel.departments.map((department) => ({
       ...department,
       id: `${hotel.id}:${department.id}`,
       name: `${hotel.name} · ${department.name}`,
     })))
-    return rows.length ? rows : aggregate(work.data, departmentLabel)
-  }, [completion.data.hotels, selectedHotel, selectedHotelAllItems, summaryHotel])
+    return rows.length ? rows : aggregate(work.data, departmentLabel, currentBusinessDate)
+  }, [completionData.hotels, currentBusinessDate, selectedHotel, selectedHotelAllItems, summaryHotel, work.data])
   const employeeRows = useMemo<SummaryRow[]>(() => {
     if (summaryHotel?.departments.length) return summaryHotel.departments.flatMap((department) => department.employees.map((employee) => ({
       ...employee,
       name: `${employee.name}${employee.positionName ? ` · ${employee.positionName}` : ''}`,
     })))
-    if (selectedHotel) return aggregate(selectedHotelAllItems, (item) => `${item.assigneeName}${item.positionName ? ` · ${item.positionName}` : ''}`)
-    const rows = completion.data.hotels.flatMap((hotel) => hotel.departments.flatMap((department) => department.employees.map((employee) => ({
+    if (selectedHotel) return aggregate(selectedHotelAllItems, (item) => `${item.assigneeName}${item.positionName ? ` · ${item.positionName}` : ''}`, currentBusinessDate)
+    const rows = completionData.hotels.flatMap((hotel) => hotel.departments.flatMap((department) => department.employees.map((employee) => ({
       ...employee,
       id: `${hotel.id}:${employee.id}`,
       name: `${hotel.name} · ${department.name} · ${employee.name}${employee.positionName ? ` · ${employee.positionName}` : ''}`,
     }))))
-    return rows.length ? rows : aggregate(work.data, (item) => `${item.assigneeName}${item.positionName ? ` · ${item.positionName}` : ''}`)
-  }, [completion.data.hotels, selectedHotel, selectedHotelAllItems, summaryHotel])
+    return rows.length ? rows : aggregate(work.data, (item) => `${item.assigneeName}${item.positionName ? ` · ${item.positionName}` : ''}`, currentBusinessDate)
+  }, [completionData.hotels, currentBusinessDate, selectedHotel, selectedHotelAllItems, summaryHotel, work.data])
   const todayMetric = canReadTeam
-    ? executive ? completion.data.today : summaryHotel?.today ?? completion.data.today
-    : completionFromItems(work.data)
+    ? executive ? completionData.today : summaryHotel?.today ?? completionData.today
+    : completionFromItems(work.data, false, currentBusinessDate)
   const monthMetric = canReadTeam
-    ? executive ? completion.data.monthToDate : summaryHotel?.monthToDate ?? completion.data.monthToDate
-    : completionFromItems(work.data, true)
+    ? executive ? completionData.monthToDate : summaryHotel?.monthToDate ?? completionData.monthToDate
+    : completionFromItems(work.data, true, currentBusinessDate)
+
+  useEffect(() => {
+    const refreshBusinessDate = () => {
+      const next = businessDate()
+      setCurrentBusinessDate((current) => current === next ? current : next)
+    }
+    const timer = window.setInterval(refreshBusinessDate, 30_000)
+    const refreshWhenVisible = () => { if (!document.hidden) refreshBusinessDate() }
+    window.addEventListener('focus', refreshBusinessDate)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refreshBusinessDate)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
+  }, [])
 
   useEffect(() => {
     if (!routeParams.expectationId) return
@@ -372,21 +388,22 @@ export function RoleWorkbench({
       </section>
 
       <section className="workbench-rate-grid" aria-label="工作完成率统计">
-        <RateCard label="当日完成率" metric={todayMetric} loading={completion.loading && canReadTeam} note="当日按时完成项 ÷ 当日应完成项" />
-        <RateCard label="截至当日月工作完成率" metric={monthMetric} loading={completion.loading && canReadTeam} note="本月截至今日按时完成项 ÷ 同期应完成项" />
+        <RateCard label="当日完成率" metric={todayMetric} loading={completionLoading && canReadTeam} note="当日按时完成项 ÷ 当日应完成项" />
+        <RateCard label="截至当日月工作完成率" metric={monthMetric} loading={completionLoading && canReadTeam} note="本月截至今日按时完成项 ÷ 同期应完成项" />
       </section>
       {completion.error && canReadTeam && <p className="workbench-rate-error">完成率暂未读取：{completion.error}</p>}
 
       {executive && <section className="workbench-portfolio panel">
-        <header><div><span className="panel-kicker">HOTEL PORTFOLIO</span><h2>负责门店</h2><p>点击门店，查看部门、人员和每一项工作的完成状态。</p></div><strong>{hotels.length} 家</strong></header>
+        <header><div><span className="panel-kicker">HOTEL PORTFOLIO</span><h2>负责门店</h2><p>数据日期 {currentBusinessDate} · 点击门店查看部门、人员和工作完成状态。</p></div><strong>{hotels.length} 家</strong></header>
         {!hotels.length ? <EmptyState title="当前未解析到负责门店" description="请检查当前任职的组织数据范围；集团总部本身不会被误算为门店。" /> : <div className="workbench-hotel-table">
           <div className="workbench-hotel-row head"><span>门店</span><span>当日完成率</span><span>本月完成率</span><span>今日待提交</span><span>当前逾期</span><span>已补交</span><span>操作</span></div>
           {hotels.map((hotel) => {
             const hotelItems = scopedWork.filter((item) => hotelIdFor(item) === hotel.id)
             const counts = countByStatus(hotelItems)
-            const summary = completion.data.hotels.find((item) => item.id === hotel.id)
-            const today = summary?.today ?? completionFromItems(work.data.filter((item) => hotelIdFor(item) === hotel.id))
-            const monthToDate = summary?.monthToDate ?? completionFromItems(work.data.filter((item) => hotelIdFor(item) === hotel.id), true)
+            const summary = completionData.hotels.find((item) => item.id === hotel.id)
+            const hotelWork = work.data.filter((item) => hotelIdFor(item) === hotel.id)
+            const today = summary?.today ?? completionFromItems(hotelWork, false, currentBusinessDate)
+            const monthToDate = summary?.monthToDate ?? completionFromItems(hotelWork, true, currentBusinessDate)
             return <div className={`workbench-hotel-row ${selectedHotel?.id === hotel.id ? 'selected' : ''}`} key={hotel.id}>
               <span><strong>{hotel.name}</strong><small>{hotel.city || '授权门店'}{hotel.roomCount ? ` · ${hotel.roomCount} 间` : ''}</small></span>
               <span className="workbench-rate-cell"><b>{today.completionRate}%</b><small>{today.onTimeCompleted}/{today.expected}</small></span>
@@ -407,6 +424,7 @@ export function RoleWorkbench({
           {canReadDailyOperations && <button type="button" onClick={() => go('daily-operations', { hotelId: selectedHotel.id })}>日运营</button>}
           {canReadKpi && <button type="button" onClick={() => go('kpi-center', { hotelId: selectedHotel.id })}>KPI</button>}
         </div></header>
+        <div className="workbench-detail-scroll" role="region" tabIndex={0} aria-label="门店工作明细，可左右滚动">
         <div className="workbench-detail-grid">
           <SummaryTable title="部门工作统计" subtitle="本门店各部门工作完成情况" rows={departmentRows} />
           <SummaryTable title="部门员工工作统计" subtitle="管理层查看部门及下级员工" rows={employeeRows} />
@@ -419,7 +437,7 @@ export function RoleWorkbench({
             {['OVERDUE', 'LATE_SUBMITTED'].includes(statusFilter) && <div className="workbench-overdue-tabs"><button type="button" className={statusFilter === 'OVERDUE' ? 'active' : ''} onClick={() => openHotelStatus(selectedHotel.id, 'OVERDUE')}>仍未提交 {hotelCounts.OVERDUE}</button><button type="button" className={statusFilter === 'LATE_SUBMITTED' ? 'active' : ''} onClick={() => openHotelStatus(selectedHotel.id, 'LATE_SUBMITTED')}>已补交 {hotelCounts.LATE_SUBMITTED}</button></div>}
             <WorkRows items={filteredWork} onSelect={setSelected} />
           </section>
-        </div>
+        </div></div>
       </section>}
 
       <section className="workbench-bottom-grid">
