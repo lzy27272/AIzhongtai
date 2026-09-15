@@ -26,6 +26,18 @@
 
 ### Added
 
+#### CHG-20260915-066：企业微信任务链接会话跨WebView保持
+
+- 日期：2026-09-15。
+- 状态：Unreleased / CODE COMPLETE / DEPLOYED TO INTERNAL PILOT。
+- 根因：生产OAuth审计记录显示任务链接已成功完成企业微信授权及一次性交换，但前端只在模块内存和`sessionStorage`保存登录状态；企业微信重建或刷新WebView后状态丢失，页面因此回到账号密码登录。
+- 会话修复：OAuth交换成功后由服务端设置`__Host-`前缀、Secure、HttpOnly、SameSite=Lax、Path=/且与JWT到期时间一致的会话Cookie；前端仅持久化不含凭据的企微会话到期标记，WebView重载后继续由安全Cookie完成认证。显式Authorization头仍优先，普通账号密码JWT继续只保存在内存。
+- 退出与边界：新增退出接口清理企微Cookie；登录、退出和OAuth匿名端点忽略残留企微Cookie，避免过期Cookie阻断重新授权。租户上下文、岗位权限和深链目标校验不变。
+- 验证：后端全量264项通过（0失败、0错误、3项按配置跳过），Web全量108项、TypeScript和Pilot生产构建通过。线上退出接口返回204并清除Secure/HttpOnly/SameSite=Lax Cookie；公网首页200、未授权身份接口401、服务健康UP且启动日志无warning/error/exception。
+- 发布：功能提交`b8ad8547e05ad1600e40de08fc40b2cddd50e0eb`已快进合并并推送GitHub `lzy27272/AIzhongtai:main`，以不可变版本`20260915-pilot8-b8ad854`部署至腾讯云内部Pilot。后端JAR SHA-256为`2692b290debd313defbba3d54b363353ac902e79256c5533c470783b9bd4baeb`，Web ZIP SHA-256为`0aea5e14320d537341f160d9f32c48110e0784ea23899818dda06e6e6529f37c`，服务器与公网`index.html` SHA-256均为`197bcc3576246cf7fb089fd15a4d43220385b511ed3ad5621828195566670469`。
+- 运维例外：部署前本地加密PostgreSQL备份已完成导出、解密比对、`pg_restore --list`和SHA-256校验，但13:43后更新的服务器备份/健康脚本新增异地挂载强制项且尚未配置，同时健康脚本仍固定预期旧Flyway V22（生产实际V53），导致首次激活自动回滚。经用户明确授权，本次无数据库迁移的发布仅排除该外部存储门禁，以应用健康、Flyway V53/53、失败迁移0、端口隔离、本地备份、公网和回滚检查重新激活成功；异地备份配置及健康脚本版本常量仍为待处理运维项。
+- 浏览器边界：Codex内置浏览器运行组件版本不完整，未完成真实企业微信客户端内的最终点击复验；测试账号需重新点击任务链接确认在企微授权有效期内不再出现账号密码登录页。
+
 #### CHG-20260915-065：横向证据照片强校验与主管端图片画廊
 
 - 日期：2026-09-15。

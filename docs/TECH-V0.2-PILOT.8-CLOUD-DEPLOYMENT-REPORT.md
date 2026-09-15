@@ -141,3 +141,14 @@ Browser插件不可用，且Playwright自带Chromium未安装；遵循前端测�
 - 验证：Web全量108项、TypeScript及Pilot生产构建通过；后端照片方向、正方形拒绝、EXIF旋转归一化和既有业务专项通过，生产JAR构建成功。5个发布输入扫描63个归档、23739个条目，敏感信息0命中、0错误。
 - Codex内置浏览器因运行组件版本不完整无法启动，故本轮没有宣称主管真实账号的线上画廊视觉验收或手机端真实拍摄验收，也未改用其他浏览器规避该故障；公网制品一致性与服务端发布门禁已独立通过。
 - 本次仍为内部Pilot增量发布，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态。
+
+## 14. 2026-09-15 企业微信任务链接会话保持修复
+
+- 功能提交为`b8ad8547e05ad1600e40de08fc40b2cddd50e0eb`，已快进合并并推送至GitHub `lzy27272/AIzhongtai:main`。生产OAuth记录证明任务链接已完成授权和一次性交换，重复登录根因是企业微信WebView重建后仅存于页面内存及`sessionStorage`的会话状态丢失。
+- 修复后OAuth交换同时设置`__Host-`前缀、Secure、HttpOnly、SameSite=Lax且与JWT到期时间一致的Cookie；前端只持久化不含令牌的会话到期标记。显式Bearer头继续优先，普通密码会话仍仅保存在内存；退出会清除企微Cookie，匿名认证端点不受残留Cookie阻断。
+- 云端不可变发布版本为`20260915-pilot8-b8ad854`。后端JAR SHA-256为`2692b290debd313defbba3d54b363353ac902e79256c5533c470783b9bd4baeb`；Web ZIP SHA-256为`0aea5e14320d537341f160d9f32c48110e0784ea23899818dda06e6e6529f37c`；服务器与公网`index.html` SHA-256均为`197bcc3576246cf7fb089fd15a4d43220385b511ed3ad5621828195566670469`。
+- 部署前生成本地加密备份`hotel_ai_os-daily-20260915T150014+0800.dump.enc`，密文与校验文件均为`root:root:0600`，密文SHA-256为`a773abfcdb44fa7524e7b17959856cfe65c7b97da78a22450b242f91192ecc96`，脚本已完成解密比对和`pg_restore --list`可恢复性验证。本次无数据库迁移，Flyway JAR/数据库均为V53，失败迁移0。
+- 13:43后服务器备份与全局健康脚本新增异地挂载强制检查，但`/etc/hotel-ai-os/backup-offsite.env`和远程挂载尚未配置；全局健康脚本还保留旧常量Flyway V22，与生产V53不一致。首次激活因此触发自动回滚到`20260915-pilot8-01733b0`，旧版本服务健康保持UP。经用户明确授权，仅排除该外部存储门禁，以候选哈希、应用健康、Flyway V53/53、失败迁移0、私有端口隔离、本地备份校验、Core API/Caddy、公网200、未授权401和旧版本回滚保护重新激活成功。异地备份与健康脚本常量必须后续修复，不得把本次例外解释为门禁已关闭。
+- 部署后Core API与Caddy均为`active`，健康状态为`UP`；退出接口公网返回204并下发清除`Secure; HttpOnly; SameSite=Lax`企微Cookie，公开首页和服务器`index.html`哈希一致，激活后Core API日志未出现warning/error/exception。
+- 验证：后端全量264项通过（0失败、0错误、3跳过），Web全量108项、TypeScript及Pilot生产构建通过。Codex内置浏览器组件版本不完整，真实企业微信客户端内的任务点击免登录仍需测试账号最终复验。
+- 本次仍为内部Pilot增量部署，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态。
