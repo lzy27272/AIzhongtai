@@ -3,12 +3,12 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前技术发行 | TECH-V0.1 |
-| 当前状态 | TECH-V0.1已发布；TECH-V0.2-PILOT.8持续部署至云端内部Pilot，工作台任务下达与V53分层完成率看板已上线；TECH-V0.2正式发布门禁仍NO-GO |
+| 当前状态 | TECH-V0.1已发布；TECH-V0.2-PILOT.8持续部署至云端内部Pilot，工作台当日口径刷新与横向完整浏览已上线；TECH-V0.2正式发布门禁仍NO-GO |
 | 当前产品蓝图 | PRODUCT-V1.4 |
 | 当前API主版本 | API-V1（/api/v1） |
 | 当前OpenAPI契约 | 已发布0.1.0-sprint1；云端Pilot运行0.2.5-pilot.8 |
 | 当前数据库迁移 | 已发布DB-V4；云端Pilot运行Flyway V53 |
-| 当前后端制品 | 云端内部Pilot运行0.2.0-pilot.8（`20260915-pilot8-226c084`） |
+| 当前后端制品 | 云端内部Pilot运行0.2.0-pilot.8（`20260915-pilot8-8ed46fb`） |
 | 最后更新 | 2026-09-15 |
 
 ## 0. 文档职责
@@ -420,6 +420,16 @@
 - 功能边界：云端没有`GROUP_MANAGEMENT_*`配置，三项能力使用默认false且租户白名单为空；V39未创建真实人员任职，区域经理继续冻结。
 - 公网：`https://www.sfgzt.cn`返回200；Microsoft Edge/Playwright桌面及移动端登录页、Pilot.8资源、表单交互、控制台与请求失败检查全部PASS。
 - 依据：`docs/TECH-V0.2-PILOT.8-CLOUD-DEPLOYMENT-REPORT.md`。
+
+### 5.27 工作台当日口径与横向浏览增量发布（2026-09-15）
+
+- 状态：CODE COMPLETE / DEPLOYED TO INTERNAL PILOT；不改变TECH-V0.2正式发行NO-GO。
+- 功能：上海时区当前日期进入个人工作、团队工作和工作台汇总资源键；页面跨日、重新聚焦或恢复可见时刷新，旧日补交记录不再混入今日状态。门店汇总增加数据日期，服务端日期过期时隐藏完成率；门店详情提供可见且可键盘聚焦的横向滚动区域。
+- 版本：功能提交`8ed46fb2ef2a3d7f2635d36b3c6229a58b5427b7`已快进合并并推送GitHub主线；云端不可变release为`20260915-pilot8-8ed46fb`。
+- 制品：后端沿用V53稳定JAR；Web ZIP SHA-256为`699900bd1467c6a54f3ad278fff3d80952247e3a867b8cf39d074f7a426fa2e4`，`index.html` SHA-256为`d770a5361f5687853728d946683c0f5e14c3b35d7a13aa0ea85772e402237b0f`，服务器与公网回读一致。
+- 部署：加密PostgreSQL备份`hotel_ai_os-auto-20260915T112759+0800.dump.enc`通过校验。首次激活因健康脚本瞬时SIGPIPE 141触发自动回滚；确认迁移成功、服务健康和候选哈希无误后，以健康重试及旧版本回滚保护重新激活成功。最终Core API/Caddy均active，健康UP，Flyway JAR/数据库53/53，公网首页200，未授权身份接口401，启动后warning为0。
+- 验证：Web 104项测试、TypeScript、Pilot生产构建及1280×900浏览器检查通过；线上真实登录后的数据刷新和横向操作仍由业务账号完成最终复验。
+- 依据：`CHANGELOG.md`、`docs/TECH-V0.2-PILOT.8-CLOUD-DEPLOYMENT-REPORT.md`。
 
 ## 6. TECH-V0.3
 
