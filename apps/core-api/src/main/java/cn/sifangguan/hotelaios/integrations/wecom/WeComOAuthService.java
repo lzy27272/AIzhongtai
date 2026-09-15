@@ -113,6 +113,13 @@ public class WeComOAuthService {
                 displayName, exchange.returnTo());
     }
 
+    URI browserSessionLocation(String returnTo) {
+        String safeReturnTo = validateReturnTo(returnTo);
+        String hashRoute = safeReturnTo.startsWith("#/") ? safeReturnTo : "#" + safeReturnTo;
+        String base = properties.frontendBaseUrl().toString().replaceAll("/+$", "");
+        return URI.create(base + "/?wecom_session=1" + hashRoute);
+    }
+
     static String validateReturnTo(String raw) {
         if (raw == null || raw.isBlank()) {
             throw new IllegalArgumentException("WeCom returnTo must include one allowed internal destination");

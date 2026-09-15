@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { apiCommand, apiRequest, authMode, changePassword, clearAccessToken, demoFallbackEnabled, hasAccessToken, login, logout } from './api/client'
+import { apiCommand, apiRequest, authMode, changePassword, clearAccessToken, demoFallbackEnabled, establishFederatedSession, hasAccessToken, login, logout } from './api/client'
 import { consumeLogoutEntry } from './app/logoutEntry'
 import { bootstrapAssignmentId, bootstrapAssignments, canLoadSecondaryResources } from './app/authBootstrap'
 import { validateLandscapeEvidence } from './app/imageEvidence'
@@ -79,7 +79,7 @@ import { useHashRoute } from './app/useHashRoute'
 import { loadExecutiveTasks } from './features/executiveTasks/api'
 import { PageAccessBoundary } from './shared/PageAccessBoundary'
 import { WecomTaskEntryPage } from './features/wecom/WecomTaskEntry'
-import { buildAppHashLocation, consumeWecomTaskEntry } from './features/wecom/entryRoute'
+import { buildAppHashLocation, consumeWecomSessionBootstrap, consumeWecomTaskEntry } from './features/wecom/entryRoute'
 import { WecomStoreWebhookConfiguration } from './features/wecom/WecomStoreWebhookConfiguration'
 import { WecomUserBindingAdministration } from './features/wecom/WecomUserBindingAdministration'
 import { consumeWecomBindingEntry } from './features/wecom/bindingEntryRoute'
@@ -101,6 +101,7 @@ const DailyOperationFeature = lazy(() => import('./features/dailyOperations/Dail
 const KpiFeature = lazy(() => import('./features/kpi/KpiRoutes').then((module) => ({ default: module.KpiRoutes })))
 const InvestmentFeature = lazy(() => import('./features/investments/InvestmentRoutes').then((module) => ({ default: module.InvestmentRoutes })))
 const ExecutiveTaskFeature = lazy(() => import('./features/executiveTasks/ExecutiveTaskRoutes').then((module) => ({ default: module.ExecutiveTaskRoutes })))
+consumeWecomSessionBootstrap(() => establishFederatedSession())
 const initialWecomTaskEntry = consumeWecomTaskEntry()
 const initialWecomBindingEntry = consumeWecomBindingEntry()
 
@@ -1340,7 +1341,6 @@ export default function App() {
   }, [])
   if (wecomTaskEntry) return <WecomTaskEntryPage
     entry={wecomTaskEntry}
-    onAuthenticated={() => { setWecomTaskEntry(undefined); setAuthenticated(true) }}
     onCancel={() => {
       window.history.replaceState(null, '', buildAppHashLocation('#/', import.meta.env.BASE_URL))
       setWecomTaskEntry(undefined)

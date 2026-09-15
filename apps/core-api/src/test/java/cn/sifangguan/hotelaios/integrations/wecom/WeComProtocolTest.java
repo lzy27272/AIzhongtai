@@ -7,6 +7,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.Base64;
+import java.net.URI;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -67,6 +68,20 @@ class WeComProtocolTest {
         assertThatThrownBy(() -> WeComOAuthService.validateReturnTo("#/my-work?expectationId=not-a-uuid"))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> WeComOAuthService.validateReturnTo("#/my-work?expectationId=" + task + "&next=/admin"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void browserSessionRedirectKeepsOnlyTheSafeTaskHashAndNonSecretMarker() {
+        WeComOAuthService service = new WeComOAuthService(
+                properties(), null, null, null, null, null, null, null);
+        String task = UUID.randomUUID().toString();
+
+        assertThat(service.browserSessionLocation("#/my-work?expectationId=" + task))
+                .isEqualTo(URI.create("http://localhost:5173/?wecom_session=1#/my-work?expectationId=" + task));
+        assertThat(service.browserSessionLocation("/workbench"))
+                .isEqualTo(URI.create("http://localhost:5173/?wecom_session=1#/workbench"));
+        assertThatThrownBy(() -> service.browserSessionLocation("https://evil.example/tasks?taskId=" + task))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

@@ -5,6 +5,7 @@ import jakarta.validation.Valid;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.ResponseCookie;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -105,6 +106,16 @@ public class WeComOAuthController {
                 .header(HttpHeaders.SET_COOKIE,
                         FederatedSessionCookie.create(session.accessToken(), session.expiresAt()).toString())
                 .body(session);
+    }
+
+    @PostMapping(value = "/browser-exchange", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public ResponseEntity<Void> browserExchange(@RequestParam String exchangeCode) {
+        WeComOAuthModels.ExchangeResponse session = service.exchange(exchangeCode);
+        return noStore(ResponseEntity.status(HttpStatus.SEE_OTHER))
+                .header(HttpHeaders.SET_COOKIE,
+                        FederatedSessionCookie.create(session.accessToken(), session.expiresAt()).toString())
+                .header(HttpHeaders.LOCATION, service.browserSessionLocation(session.returnTo()).toString())
+                .build();
     }
 
     private static ResponseCookie verifierCookie(String value, long maxAgeSeconds) {

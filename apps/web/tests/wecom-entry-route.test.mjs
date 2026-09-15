@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import {
   buildAppHashLocation,
+  consumeWecomSessionBootstrap,
   consumeWecomTaskEntry,
   safeTaskDeepLink,
 } from '../src/features/wecom/entryRoute.ts'
+
+const taskEntrySource = await readFile(
+  new URL('../src/features/wecom/WecomTaskEntry.tsx', import.meta.url),
+  'utf8',
+)
 
 test('企微回调只读取 exchange_code 并立即清除地址栏凭证', () => {
   let replaced = ''
@@ -50,4 +57,43 @@ test('完成和取消都回到应用根路径，不保留 wecom-auth pathname', 
   assert.equal(buildAppHashLocation('#/tasks?taskId=1', '/'), '/#/tasks?taskId=1')
   assert.equal(buildAppHashLocation('#/', '/console/'), '/console/#/')
   assert.equal(buildAppHashLocation('#/tasks', '//evil.example/'), '/#/tasks')
+})
+
+test('顶层换票跳转建立非敏感会话标记并立即清理地址栏', () => {
+  let replaced = ''
+  let established = 0
+  globalThis.window = {
+    location: { origin: 'https://www.sfgzt.cn' },
+    history: { replaceState: (_state, _title, url) => { replaced = url } },
+  }
+
+  const consumed = consumeWecomSessionBootstrap(
+    () => { established += 1 },
+    { href: 'https://www.sfgzt.cn/?wecom_session=1#/my-work?expectationId=123e4567-e89b-42d3-a456-426614174000' },
+  )
+
+  assert.equal(consumed, true)
+  assert.equal(established, 1)
+  assert.equal(replaced, '/#/my-work?expectationId=123e4567-e89b-42d3-a456-426614174000')
+})
+
+test('伪造或重复会话标记会被清理但不会建立登录状态', () => {
+  let established = 0
+  globalThis.window = {
+    location: { origin: 'https://www.sfgzt.cn' },
+    history: { replaceState: () => undefined },
+  }
+
+  assert.equal(consumeWecomSessionBootstrap(
+    () => { established += 1 },
+    { href: 'https://www.sfgzt.cn/?wecom_session=1&wecom_session=1#/workbench' },
+  ), false)
+  assert.equal(established, 0)
+})
+
+test('企微任务入口使用顶层 POST 建立 HttpOnly 会话', () => {
+  assert.match(taskEntrySource, /method="post"/)
+  assert.match(taskEntrySource, /\/integrations\/wecom\/oauth\/browser-exchange/)
+  assert.match(taskEntrySource, /formRef\.current\.submit\(\)/)
+  assert.doesNotMatch(taskEntrySource, /exchangeWecomCode/)
 })

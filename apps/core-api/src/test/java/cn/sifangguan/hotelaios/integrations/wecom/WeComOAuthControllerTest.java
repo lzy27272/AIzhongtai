@@ -24,6 +24,33 @@ import static org.springframework.http.MediaType.APPLICATION_JSON;
 
 class WeComOAuthControllerTest {
     @Test
+    void browserExchangeSetsSessionCookieAndRedirectsWithoutExposingTheJwt() throws Exception {
+        WeComOAuthService service = mock(WeComOAuthService.class);
+        WeComBindingEnrollmentService enrollmentService = mock(WeComBindingEnrollmentService.class);
+        UUID accountId = UUID.randomUUID();
+        String returnTo = "#/my-work?expectationId=10000000-0000-0000-0000-000000000001";
+        when(service.exchange("one-time-browser-code"))
+                .thenReturn(new WeComOAuthModels.ExchangeResponse(
+                        "signed.jwt.value", "Bearer", OffsetDateTime.now().plusMinutes(30),
+                        accountId, "Employee", returnTo));
+        when(service.browserSessionLocation(returnTo)).thenReturn(URI.create(
+                "https://www.sfgzt.cn/?wecom_session=1#/my-work?expectationId=10000000-0000-0000-0000-000000000001"));
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new WeComOAuthController(service, enrollmentService)).build();
+
+        mvc.perform(post("/api/v1/integrations/wecom/oauth/browser-exchange")
+                        .contentType("application/x-www-form-urlencoded")
+                        .param("exchangeCode", "one-time-browser-code"))
+                .andExpect(status().isSeeOther())
+                .andExpect(header().string("Location",
+                        "https://www.sfgzt.cn/?wecom_session=1#/my-work?expectationId=10000000-0000-0000-0000-000000000001"))
+                .andExpect(header().string("Set-Cookie", containsString(
+                        "__Host-hotel_ai_wecom_session=signed.jwt.value")))
+                .andExpect(header().string("Set-Cookie", containsString("HttpOnly")))
+                .andExpect(header().string("Cache-Control", "no-store, private"))
+                .andExpect(content().string(""));
+    }
+
+    @Test
     void exchangeEstablishesPersistentHttpOnlyWeComSessionCookie() throws Exception {
         WeComOAuthService service = mock(WeComOAuthService.class);
         WeComBindingEnrollmentService enrollmentService = mock(WeComBindingEnrollmentService.class);

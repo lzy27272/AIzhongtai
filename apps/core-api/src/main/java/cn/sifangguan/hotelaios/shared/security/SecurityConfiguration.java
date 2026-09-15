@@ -39,7 +39,8 @@ public class SecurityConfiguration {
             "/api/v1/auth/logout",
             "/api/v1/integrations/wecom/oauth/start",
             "/api/v1/integrations/wecom/oauth/callback",
-            "/api/v1/integrations/wecom/oauth/exchange"
+            "/api/v1/integrations/wecom/oauth/exchange",
+            "/api/v1/integrations/wecom/oauth/browser-exchange"
     );
 
     @Bean
@@ -68,6 +69,7 @@ public class SecurityConfiguration {
                                 "/api/v1/integrations/wecom/oauth/start",
                                 "/api/v1/integrations/wecom/oauth/callback").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/integrations/wecom/oauth/exchange").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/integrations/wecom/oauth/browser-exchange").permitAll()
                         .requestMatchers(HttpMethod.POST,
                                 "/api/v1/integrations/wecom/binding-enrollment/preview",
                                 "/api/v1/integrations/wecom/binding-enrollment/start").permitAll()

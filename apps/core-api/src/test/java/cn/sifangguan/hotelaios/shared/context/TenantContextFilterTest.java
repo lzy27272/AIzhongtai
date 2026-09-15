@@ -74,11 +74,15 @@ class TenantContextFilterTest {
         filter.doFilter(callback, callbackResponse, (req, res) -> callbackReached.set(true));
         assertTrue(callbackReached.get());
 
-        MockHttpServletRequest exchange = new MockHttpServletRequest("POST",
-                "/api/v1/integrations/wecom/oauth/exchange");
-        AtomicReference<Boolean> exchangeReached = new AtomicReference<>(false);
-        filter.doFilter(exchange, new MockHttpServletResponse(), (req, res) -> exchangeReached.set(true));
-        assertTrue(exchangeReached.get());
+        for (String path : new String[]{
+                "/api/v1/integrations/wecom/oauth/exchange",
+                "/api/v1/integrations/wecom/oauth/browser-exchange"
+        }) {
+            MockHttpServletRequest exchange = new MockHttpServletRequest("POST", path);
+            AtomicReference<Boolean> exchangeReached = new AtomicReference<>(false);
+            filter.doFilter(exchange, new MockHttpServletResponse(), (req, res) -> exchangeReached.set(true));
+            assertTrue(exchangeReached.get(), path + " must remain available before authentication");
+        }
 
         for (String endpoint : new String[]{"preview", "start"}) {
             MockHttpServletRequest enrollment = new MockHttpServletRequest("POST",

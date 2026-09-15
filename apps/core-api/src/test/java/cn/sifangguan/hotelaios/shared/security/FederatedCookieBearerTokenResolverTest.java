@@ -31,7 +31,9 @@ class FederatedCookieBearerTokenResolverTest {
     @Test
     void ignoresStaleCookieOnAnonymousExchangeAndLogoutEndpoints() {
         for (String path : new String[] {
-                "/api/v1/integrations/wecom/oauth/exchange", "/api/v1/auth/logout"
+                "/api/v1/integrations/wecom/oauth/exchange",
+                "/api/v1/integrations/wecom/oauth/browser-exchange",
+                "/api/v1/auth/logout"
         }) {
             MockHttpServletRequest request = new MockHttpServletRequest("POST", path);
             request.setCookies(new Cookie(FederatedSessionCookie.NAME, "stale-cookie-jwt"));

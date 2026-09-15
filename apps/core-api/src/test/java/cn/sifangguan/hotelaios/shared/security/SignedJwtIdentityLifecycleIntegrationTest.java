@@ -23,6 +23,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
+import jakarta.servlet.http.Cookie;
 import javax.sql.DataSource;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -177,6 +178,16 @@ class SignedJwtIdentityLifecycleIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.businessActorAssignmentId").doesNotExist())
                 .andExpect(jsonPath("$.tenantScope").value(true));
+    }
+
+    @Test
+    void secureFederatedCookieAuthenticatesWithoutAnAuthorizationHeader() throws Exception {
+        String token = OIDC.sign(FRONT_DESK);
+
+        mockMvc.perform(get("/api/v1/iam/me")
+                        .cookie(new Cookie(FederatedSessionCookie.NAME, token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.account.id").value(FRONT_DESK));
     }
 
     @Test

@@ -9,6 +9,22 @@ export type WecomTaskEntry = {
   securityError?: string
 }
 
+export function consumeWecomSessionBootstrap(
+  establishSession: () => void,
+  location: Location = window.location,
+): boolean {
+  const url = new URL(location.href)
+  const markers = url.searchParams.getAll('wecom_session')
+  if (!markers.length) return false
+
+  url.searchParams.delete('wecom_session')
+  const remainingQuery = url.searchParams.toString()
+  window.history.replaceState(null, '', `${url.pathname}${remainingQuery ? `?${remainingQuery}` : ''}${url.hash}`)
+  if (markers.length !== 1 || markers[0] !== '1') return false
+  establishSession()
+  return true
+}
+
 let consumed = false
 let cachedEntry: WecomTaskEntry | undefined
 
