@@ -3,12 +3,12 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前技术发行 | TECH-V0.1 |
-| 当前状态 | TECH-V0.1已发布；TECH-V0.2-PILOT.8持续部署至云端内部Pilot，企业微信任务链接跨WebView会话保持已上线；TECH-V0.2正式发布门禁仍NO-GO |
+| 当前状态 | TECH-V0.1已发布；TECH-V0.2-PILOT.8持续部署至云端内部Pilot，企业微信任务链接顶层安全换票已上线；TECH-V0.2正式发布门禁仍NO-GO |
 | 当前产品蓝图 | PRODUCT-V1.4 |
 | 当前API主版本 | API-V1（/api/v1） |
 | 当前OpenAPI契约 | 已发布0.1.0-sprint1；云端Pilot运行0.2.5-pilot.8 |
 | 当前数据库迁移 | 已发布DB-V4；云端Pilot运行Flyway V53 |
-| 当前后端制品 | 云端内部Pilot运行0.2.0-pilot.8（`20260915-pilot8-b8ad854`） |
+| 当前后端制品 | 云端内部Pilot运行0.2.0-pilot.8（`20260915-pilot8-284f275`） |
 | 最后更新 | 2026-09-15 |
 
 ## 0. 文档职责
@@ -58,7 +58,7 @@
 | TECH-V0.2-PILOT.5 | 已由PILOT.6替代 / 保留为回滚历史 | 真实PostgreSQL、真实应用账号、组织岗位人员维护、七岗位专属工作包、真实填报、图片附件、团队权限及驾驶舱 | PRODUCT-V1.2 |
 | TECH-V0.2-PILOT.6 | 已由PILOT.7替代 / 保留为回滚历史 | 统一工作提交、多附件、任务下达与证据、CEO岗位工作/任务/门店驾驶舱模板治理 | PRODUCT-V1.2 |
 | TECH-V0.2-PILOT.7 | 内部修复版 / 技术与公网业务闭环PASS / 待持续门店试用 | 可点击角色工作台与驾驶舱、原子任务投递、任务读取隔离、自动刷新接收、无标准人工验收、全角色任务目标矩阵、UAT数据清理 | PRODUCT-V1.2 |
-| TECH-V0.2-PILOT.8 | 云端内部Pilot持续迭代 / 企业微信任务链接跨WebView会话保持已部署 / 正式发行仍NO-GO | 业务任职、董事长受限交办、企业微信入职、岗位与人员治理、店长日常工作闭环、管理工作台一键下达、分层完成率、证据图片画廊及企微任务深链会话保持；真实业务账号仍需持续复验 | PRODUCT-V1.4 |
+| TECH-V0.2-PILOT.8 | 云端内部Pilot持续迭代 / 企业微信任务链接顶层安全换票已部署 / 正式发行仍NO-GO | 业务任职、董事长受限交办、企业微信入职、岗位与人员治理、店长日常工作闭环、管理工作台一键下达、分层完成率、证据图片画廊及企微任务深链免重复登录；真实业务账号仍需持续复验 | PRODUCT-V1.4 |
 | TECH-V0.2 | RC Final技术验证PASS / Release NO-GO / Unreleased | 标准→工作包→记录→评价→规则→任务→执行→验收闭环 | PRODUCT-V1.2 |
 | TECH-V0.3 | 预实施计划V1.1已输出 / 待技术冻结 / 未启动 / 开工前须按届时当前产品基线重评 | AI Gateway、工作/经营/点评/CEO Agent、AI简报和AI主动发现 | 原设计PRODUCT-V1.2；当前须重基线PRODUCT-V1.4 |
 | TECH-V0.4 | 建议阶段 | 绩效复盘、知识沉淀和标准优化建议 | PRODUCT-V1.2 |
@@ -439,6 +439,16 @@
 - 制品：后端JAR SHA-256为`e577d6741367ba290c8b3cb0df93dd0cb687369ed25a97e7e271b63e94b38ecd`；Web ZIP SHA-256为`bfd9a6eabd23d775dbd5cb553bb5a744a595ab4692f0ad9ed0308186097d9b71`，`index.html` SHA-256为`11ef63684d87995b81d82b129787f12bf2944ab029520745b7783df053837065`，服务器与公网回读一致。
 - 部署：加密PostgreSQL备份`hotel_ai_os-auto-20260915T133022+0800.dump.enc`返回`POSTGRES_BACKUP_OK`且权限为`root:root:0600`。无数据库迁移；Core API/Caddy均active，健康UP，Flyway JAR/数据库53/53且失败迁移0，公网首页200，未授权身份接口401。
 - 验证：Web 108项、TypeScript、Pilot生产构建、后端照片方向/EXIF专项及生产JAR构建通过；5个发布输入扫描63个归档、23739个条目，敏感信息0命中、0错误。Codex内置浏览器因运行组件版本不完整未能启动，登录后真实画廊与手机横向拍摄仍需业务账号复验。
+- 依据：`CHANGELOG.md`、`docs/TECH-V0.2-PILOT.8-CLOUD-DEPLOYMENT-REPORT.md`。
+
+### 5.29 企业微信任务链接顶层换票增量发布（2026-09-15）
+
+- 状态：CODE COMPLETE / DEPLOYED TO INTERNAL PILOT；不改变TECH-V0.2正式发行NO-GO。
+- 功能：企微任务入口使用浏览器顶层POST消费一次性码，由303响应设置Secure/HttpOnly会话Cookie并跳回白名单任务Hash；只在地址栏短暂使用不含凭据且会立即清理的会话标记，解决部分iOS企业微信WebView异步换票Cookie不落盘而反复要求账号密码登录的问题。
+- 版本：功能提交`284f2752156a596e3b5d9a19fd3dcefa89520e41`已快进合并并推送GitHub主线；云端不可变release为`20260915-pilot8-284f275`。
+- 制品：后端JAR SHA-256为`eeaeb2c3319b221151e331e4bbc9baba91c4d159a4c59d336d9b42a364b56a88`；Web ZIP SHA-256为`3450d74b8d9357cb7a6704f0494960e6e47b5ec97ad5070aa717fd86587bc09b`，服务器与公网`index.html` SHA-256为`02fe035692aea48ceee5d6f24a2578e57a8b19d4b067868ed6273370d047b841`。
+- 部署：加密PostgreSQL备份`hotel_ai_os-daily-20260915T185329+0800.dump.enc`完成导出、`pg_restore --list`及SHA-256校验；Core API/Caddy/PostgreSQL/fail2ban/ClamAV均active，健康UP，Flyway V53且失败迁移0，公网首页200、未授权身份接口401。异地备份尚未配置，本轮仅沿用已授权的内部Pilot例外，不视为门禁关闭。
+- 验证：后端267项、Web 111项、TypeScript和Pilot生产构建通过；发布输入敏感信息扫描0命中、0错误。公网换票路由与静态契约已生效，真实企微客户端仍需用测试账号连续点击两个不同任务确认最终体验。
 - 依据：`CHANGELOG.md`、`docs/TECH-V0.2-PILOT.8-CLOUD-DEPLOYMENT-REPORT.md`。
 
 ## 6. TECH-V0.3

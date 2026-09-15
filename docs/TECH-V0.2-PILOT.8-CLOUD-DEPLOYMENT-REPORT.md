@@ -152,3 +152,14 @@ Browser插件不可用，且Playwright自带Chromium未安装；遵循前端测�
 - 部署后Core API与Caddy均为`active`，健康状态为`UP`；退出接口公网返回204并下发清除`Secure; HttpOnly; SameSite=Lax`企微Cookie，公开首页和服务器`index.html`哈希一致，激活后Core API日志未出现warning/error/exception。
 - 验证：后端全量264项通过（0失败、0错误、3跳过），Web全量108项、TypeScript及Pilot生产构建通过。Codex内置浏览器组件版本不完整，真实企业微信客户端内的任务点击免登录仍需测试账号最终复验。
 - 本次仍为内部Pilot增量部署，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态。
+
+## 15. 2026-09-15 企业微信任务链接顶层换票修复
+
+- 功能提交为`284f2752156a596e3b5d9a19fd3dcefa89520e41`，已快进合并并推送至GitHub `lzy27272/AIzhongtai:main`。生产审计已证明OAuth授权与一次性交换完成；本次进一步修复部分iOS企业微信WebView不稳定接收异步换票响应Cookie，导致每个新任务仍进入账号密码登录页的问题。
+- 企微任务入口改用浏览器顶层表单POST换票；服务端消费一次性码后在303跳转响应设置Secure、HttpOnly、SameSite=Lax的`__Host-hotel_ai_wecom_session`，再跳回经过白名单校验的任务Hash。前端仅消费并立即清理`wecom_session=1`非敏感标记，JWT不进入URL或Web存储；旧JSON接口继续兼容。
+- 云端不可变发布版本为`20260915-pilot8-284f275`。后端JAR SHA-256为`eeaeb2c3319b221151e331e4bbc9baba91c4d159a4c59d336d9b42a364b56a88`；Web ZIP SHA-256为`3450d74b8d9357cb7a6704f0494960e6e47b5ec97ad5070aa717fd86587bc09b`；服务器与公网`index.html` SHA-256均为`02fe035692aea48ceee5d6f24a2578e57a8b19d4b067868ed6273370d047b841`。
+- 部署前生成加密PostgreSQL备份`hotel_ai_os-daily-20260915T185329+0800.dump.enc`，权限为`root:root:0600`，脚本已执行`pg_restore --list`，密文SHA-256为`1f68a3828290ec62a90f44e8d049c93ebcdba02a7f7e197d9cc9f90835f25ff6`且校验通过。无新增数据库迁移，Flyway保持V53且失败迁移0。
+- `/etc/hotel-ai-os/backup-offsite.env`与异地挂载仍未配置，备份服务在本地备份完整性检查完成后按预期以`OFFSITE_BACKUP_CONFIG_REQUIRED`退出。本次沿用用户明确授权的内部Pilot例外，通过本地加密备份、候选哈希、服务健康、Flyway V53、私有端口隔离、公网200/401和旧版本自动回滚保护完成切换；异地备份门禁仍保持未关闭。
+- 部署后Core API、Caddy、PostgreSQL、fail2ban和ClamAV均为`active`，运行进程目录与两个`current`软链接均指向新release，健康状态为`UP`；公开首页返回200，未授权身份接口返回401，顶层换票端点空凭证返回400，公开主资源包含新换票路径和会话标记，启动窗口无warning/error/exception。
+- 验证：后端全量267项通过（0失败、0错误、3跳过），Web全量111项、TypeScript及Pilot生产构建通过；5个发布输入扫描63个归档、23,740个条目，敏感信息0命中、0错误。真实企业微信客户端任务免登录仍需测试账号点击至少两个不同任务完成最终复验。
+- 本次仍为内部Pilot增量部署，不改变TECH-V0.2正式版本的`Unreleased / NO-GO`状态。
